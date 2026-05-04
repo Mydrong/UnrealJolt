@@ -34,6 +34,27 @@ void FJoltSettingsDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 	}
 	WeakSettings = Settings;
 
+	// BuilderHandle lifetime == this customizer's lifetime. The lambda captures a TWeakPtr so it
+	// silently no-ops after ForceRefreshDetails destroys and replaces this customizer instance.
+	BuilderHandle = MakeShared<IDetailLayoutBuilder*>(&DetailBuilder);
+	TWeakPtr<IDetailLayoutBuilder*> WeakHandle = BuilderHandle;
+
+	// Rebuild the matrix whenever layers are added, removed, or renamed.
+	FCoreUObjectDelegates::OnObjectPropertyChanged.AddWeakLambda(Settings,
+		[WeakHandle, WeakObj = TWeakObjectPtr<UJoltSettings>(Settings)](
+			UObject* Object, FPropertyChangedEvent& Event)
+		{
+			if (Object != WeakObj.Get()) return;
+			// Skip per-keystroke interactive events (e.g. typing a layer name character by character).
+			if (Event.ChangeType == EPropertyChangeType::Interactive) return;
+			const FName Member = Event.GetMemberPropertyName();
+			if (Member != GET_MEMBER_NAME_CHECKED(UJoltSettings, ObjectLayers) &&
+				Member != GET_MEMBER_NAME_CHECKED(UJoltSettings, BroadphaseLayers))
+				return;
+			if (TSharedPtr<IDetailLayoutBuilder*> Handle = WeakHandle.Pin())
+				(*Handle)->ForceRefreshDetails();
+		});
+
 	// Default property rendering for BroadphaseLayers and ObjectLayers is fine — users edit the
 	// list of rows through the usual array widget. The matrix widget lives just below, in a new
 	// "Collision Matrix" category, so the two views stay side by side.

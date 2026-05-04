@@ -4,8 +4,8 @@
 
 namespace
 {
-	const FName NonMovingLayerName(TEXT("NonMoving"));
-	const FName MovingLayerName(TEXT("Moving"));
+	const FName StaticLayerName(TEXT("Static"));
+	const FName DynamicLayerName(TEXT("Dynamic"));
 
 	constexpr int32 MaxBroadphaseLayerCount = 255; // Jolt's JPH::BroadPhaseLayer is a uint8
 	constexpr int32 MaxObjectLayerCount = 65535;   // Jolt's JPH::ObjectLayer is a uint16
@@ -34,40 +34,53 @@ UJoltSettings::UJoltSettings(const FObjectInitializer& obj)
 	PreAllocatedMemory = 10;	   // 10MB
 	bEnableMultithreading = false; // 10MB
 
-	// Preserve the legacy hardcoded layer setup so projects upgrading across this change see no
-	// behavioral difference: two broadphase layers, two object layers, Moving collides with
-	// everything and NonMoving only collides with Moving.
+	// Default layer setup: two broadphase layers, two object layers. Dynamic collides with
+	// everything; Static only collides with Dynamic.
 	if (BroadphaseLayers.Num() == 0)
 	{
-		BroadphaseLayers.Add(FJoltBroadphaseLayer(NonMovingLayerName));
-		BroadphaseLayers.Add(FJoltBroadphaseLayer(MovingLayerName));
+		BroadphaseLayers.Add(FJoltBroadphaseLayer(StaticLayerName));
+		BroadphaseLayers.Add(FJoltBroadphaseLayer(DynamicLayerName));
 	}
 
 	if (ObjectLayers.Num() == 0)
 	{
-		FJoltObjectLayer nonMoving;
-		nonMoving.Name = NonMovingLayerName;
-		nonMoving.BroadphaseLayer = NonMovingLayerName;
-		nonMoving.CollidesWith.Add(MovingLayerName);
-		ObjectLayers.Add(nonMoving);
+		FJoltObjectLayer staticLayer;
+		staticLayer.Name = StaticLayerName;
+		staticLayer.BroadphaseLayer = StaticLayerName;
+		staticLayer.CollidesWith.Add(DynamicLayerName);
+		ObjectLayers.Add(staticLayer);
 
-		FJoltObjectLayer moving;
-		moving.Name = MovingLayerName;
-		moving.BroadphaseLayer = MovingLayerName;
-		moving.CollidesWith.Add(NonMovingLayerName);
-		moving.CollidesWith.Add(MovingLayerName);
-		ObjectLayers.Add(moving);
+		FJoltObjectLayer dynamicLayer;
+		dynamicLayer.Name = DynamicLayerName;
+		dynamicLayer.BroadphaseLayer = DynamicLayerName;
+		dynamicLayer.CollidesWith.Add(StaticLayerName);
+		dynamicLayer.CollidesWith.Add(DynamicLayerName);
+		ObjectLayers.Add(dynamicLayer);
 	}
 
 	if (DefaultDynamicLayer.IsNone())
 	{
-		DefaultDynamicLayer = MovingLayerName;
+		DefaultDynamicLayer = DynamicLayerName;
 	}
 
 	if (DefaultStaticLayer.IsNone())
 	{
-		DefaultStaticLayer = NonMovingLayerName;
+		DefaultStaticLayer = StaticLayerName;
 	}
+}
+
+TArray<FString> UJoltSettings::GetBroadphaseLayerNames() const
+{
+	TArray<FString> Names;
+	Names.Reserve(BroadphaseLayers.Num());
+	for (const FJoltBroadphaseLayer& Layer : BroadphaseLayers)
+	{
+		if (!Layer.Name.IsNone())
+		{
+			Names.Add(Layer.Name.ToString());
+		}
+	}
+	return Names;
 }
 
 #if WITH_EDITOR
@@ -123,6 +136,34 @@ void UJoltSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChange
 	{
 		ObjectLayers.SetNum(MaxObjectLayerCount);
 	}
+
+	// Static and Dynamic are required layers — restore them silently if deleted.
+	auto EnsureBroadphaseLayer = [this](FName LayerName)
+	{
+		const bool bExists = BroadphaseLayers.ContainsByPredicate(
+			[&](const FJoltBroadphaseLayer& L) { return L.Name == LayerName; });
+		if (!bExists)
+		{
+			BroadphaseLayers.Insert(FJoltBroadphaseLayer(LayerName), 0);
+		}
+	};
+	EnsureBroadphaseLayer(StaticLayerName);
+	EnsureBroadphaseLayer(DynamicLayerName);
+
+	auto EnsureObjectLayer = [this](FName LayerName)
+	{
+		const bool bExists = ObjectLayers.ContainsByPredicate(
+			[&](const FJoltObjectLayer& L) { return L.Name == LayerName; });
+		if (!bExists)
+		{
+			FJoltObjectLayer Layer;
+			Layer.Name = LayerName;
+			Layer.BroadphaseLayer = LayerName;
+			ObjectLayers.Insert(Layer, 0);
+		}
+	};
+	EnsureObjectLayer(StaticLayerName);
+	EnsureObjectLayer(DynamicLayerName);
 
 	// Build a set of valid object layer names so we can filter out stale references.
 	TSet<FName> validObjectLayerNames;
@@ -196,12 +237,12 @@ void UJoltSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChange
 	// Default layer names must also point at valid object layers.
 	if (!validObjectLayerNames.Contains(DefaultDynamicLayer))
 	{
-		DefaultDynamicLayer = validObjectLayerNames.Contains(MovingLayerName) ? MovingLayerName : (ObjectLayers.Num() > 0 ? ObjectLayers[0].Name : NAME_None);
+		DefaultDynamicLayer = validObjectLayerNames.Contains(DynamicLayerName) ? DynamicLayerName : (ObjectLayers.Num() > 0 ? ObjectLayers[0].Name : NAME_None);
 	}
 
 	if (!validObjectLayerNames.Contains(DefaultStaticLayer))
 	{
-		DefaultStaticLayer = validObjectLayerNames.Contains(NonMovingLayerName) ? NonMovingLayerName : (ObjectLayers.Num() > 0 ? ObjectLayers[0].Name : NAME_None);
+		DefaultStaticLayer = validObjectLayerNames.Contains(StaticLayerName) ? StaticLayerName : (ObjectLayers.Num() > 0 ? ObjectLayers[0].Name : NAME_None);
 	}
 }
 #endif

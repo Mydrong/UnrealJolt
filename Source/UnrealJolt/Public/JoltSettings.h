@@ -26,12 +26,12 @@ struct UNREALJOLT_API FJoltObjectLayer
 	FName Name;
 
 	// Which broadphase layer this object layer maps to. Must match a name in UJoltSettings::BroadphaseLayers.
-	UPROPERTY(Config, EditAnywhere, Category = "Layers")
+	UPROPERTY(Config, EditAnywhere, Category = "Layers", meta = (GetOptions = "GetBroadphaseLayerNames"))
 	FName BroadphaseLayer;
 
 	// Names of other object layers this layer collides with. Collision is symmetric:
 	// UJoltSettings::PostEditChangeProperty mirrors edits so both directions stay in sync.
-	UPROPERTY(Config, EditAnywhere, Category = "Layers")
+	UPROPERTY(Config, VisibleAnywhere, Category = "Layers")
 	TSet<FName> CollidesWith;
 };
 
@@ -44,6 +44,10 @@ class UNREALJOLT_API UJoltSettings : public UObject
 	GENERATED_BODY()
 public:
 	UJoltSettings(const FObjectInitializer& obj);
+
+	// Returns the names of all broadphase layers. Used by the editor to populate the BroadphaseLayer dropdown.
+	UFUNCTION()
+	TArray<FString> GetBroadphaseLayerNames() const;
 	/*
 	 * 	Maximum number of bodies to support.
 	 * 	This will be divided by 3
@@ -166,7 +170,7 @@ public:
 
 	/*
 	 * Broadphase layers. Each broadphase layer becomes a separate bounding volume tree in Jolt's
-	 * broadphase. Typical setups have 2 (NonMoving / Moving). Jolt's internal type is uint8 so the
+	 * broadphase. Typical setups have 2 (Static / Dynamic). Jolt's internal type is uint8 so the
 	 * maximum is 255.
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Layers", meta = (TitleProperty = "Name"))

@@ -19,6 +19,9 @@ public:
 
 private:
 	TWeakObjectPtr<class UJoltSettings> WeakSettings;
+	// Indirect handle whose lifetime matches this customizer instance. The lambda captures a
+	// TWeakPtr so it becomes a no-op once this customizer is destroyed during ForceRefreshDetails.
+	TSharedPtr<IDetailLayoutBuilder*> BuilderHandle;
 
 	// Toggle collision between two object layers. Mirrors the change on both sides so the relation
 	// stays symmetric. Records a transaction so undo works.

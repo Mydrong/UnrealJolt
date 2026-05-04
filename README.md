@@ -19,7 +19,7 @@ Plugin that brings [Jolt Physics](https://github.com/jrouwe/JoltPhysics) into un
 
 ### Requirements
 
-- Unreal engine 5 (mostly tested on 5.6.0, should work on older versions)
+- Unreal engine 5.7.4 (Might work on older versions)
 
 ### Installation
 
@@ -59,6 +59,18 @@ Plugin that brings [Jolt Physics](https://github.com/jrouwe/JoltPhysics) into un
   - This may be a chore if you work with many levels, playing a level at least one time in editor (will work on it).  
 - A `JoltData` directory is always generated during cooking and **must be included when packaging your project**.
 ---
+
+## Collision Layers
+
+Configured under **Project Settings → Plugins → Jolt → Layers**.
+
+- Add/remove **Broadphase Layers** and **Object Layers** using the array widgets.
+- For each Object Layer, pick its **Broadphase Layer** from the dropdown.
+- Toggle which layer pairs collide in the **Collision Matrix**.
+- `Static` and `Dynamic` are required and cannot be deleted.
+
+---
+
 ## Deterministic simulation
 
 To ensure deterministic simulation with Jolt Physics across platforms, follow the [official guidelines](https://jrouwe.github.io/JoltPhysicsDocs/5.3.0/index.html#deterministic-simulation). Use Jolt’s math and utility functions (`Sin`, `Cos`, `QuickSort`, `BinaryHeapPush/Pop`, `Hash`) instead of STL or platform-dependent ones, and always keep API calls (body/constraint creation, updates) in the same order.
