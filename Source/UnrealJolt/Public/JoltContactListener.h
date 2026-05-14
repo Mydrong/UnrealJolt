@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Chaos/ChaosEngineInterface.h"
 #include "Containers/Queue.h"
 #include "UnrealJolt/JoltMain.h"
 #include "UObject/ObjectMacros.h"
@@ -13,13 +14,17 @@ struct FContactInfo
 
 	FContactInfo() = default;
 
-	FContactInfo(int32 BodyID1, int32 BodyID2, const FVector& BodyID1ContactLocation, const FVector& BodyID2ContactLocation, float NormalImpulse, FVector NormalDir)
+	FContactInfo(int32 BodyID1, int32 BodyID2, const FVector& BodyID1ContactLocation, const FVector& BodyID2ContactLocation, float NormalImpulse, FVector NormalDir, TEnumAsByte<EPhysicalSurface> Surface1 = SurfaceType_Default, TEnumAsByte<EPhysicalSurface> Surface2 = SurfaceType_Default, const FVector& LinearVelocity1 = FVector::ZeroVector, const FVector& LinearVelocity2 = FVector::ZeroVector)
 		: BodyID1(BodyID1)
 		, BodyID2(BodyID2)
 		, BodyID1ContactLocation(BodyID1ContactLocation)
 		, BodyID2ContactLocation(BodyID2ContactLocation)
 		, NormalImpulse(NormalImpulse)
-		, NormalDir(NormalDir) {}
+		, NormalDir(NormalDir)
+		, Surface1(Surface1)
+		, Surface2(Surface2)
+		, LinearVelocity1(LinearVelocity1)
+		, LinearVelocity2(LinearVelocity2) {}
 
 	int32 BodyID1;
 
@@ -32,6 +37,22 @@ struct FContactInfo
 	float NormalImpulse;
 
 	FVector NormalDir;
+
+	// Surface type of body1 at the contact sub-shape — resolved from the
+	// Jolt JoltPhysicsMaterial bound to that shape (originating from the UE
+	// UPhysicalMaterial assigned to the body setup). Defaults to
+	// SurfaceType_Default if the shape has no material.
+	TEnumAsByte<EPhysicalSurface> Surface1 = SurfaceType_Default;
+
+	// Surface type of body2 at the contact sub-shape. Same source as Surface1.
+	TEnumAsByte<EPhysicalSurface> Surface2 = SurfaceType_Default;
+
+	// Linear velocity of each body at OnContactAdded time (UE units, cm/s).
+	// Used by the FX layer to derive impact-vs-glancing and slide speed for
+	// Metasound parameters. Static bodies are zero.
+	FVector LinearVelocity1 = FVector::ZeroVector;
+
+	FVector LinearVelocity2 = FVector::ZeroVector;
 };
 
 class UEJoltCallBackContactListener : public JPH::ContactListener
