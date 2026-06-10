@@ -33,8 +33,6 @@
 
 DEFINE_LOG_CATEGORY(JoltSubSystemLogs);
 
-UE_DISABLE_OPTIMIZATION
-
 void UJoltSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 
@@ -1998,4 +1996,3 @@ JPH::ObjectLayer UJoltSubsystem::ResolveObjectLayer(FName LayerName, JPH::Object
 	return static_cast<JPH::ObjectLayer>(*idx);
 }
 
-UE_ENABLE_OPTIMIZATION
