@@ -31,7 +31,7 @@ void UEJoltCallBackContactListener::OnContactAdded(const JPH::Body& inBody1, con
 	const FVector linVel1 = JoltHelpers::ToUESize(inBody1.GetLinearVelocity());
 	const FVector linVel2 = JoltHelpers::ToUESize(inBody2.GetLinearVelocity());
 
-	for (uint8 i = 0; const JPH::CollisionEstimationResult::Impulse& impulse : result.mImpulses)
+	for (uint8 i = 0; const float& impulse : result.mContactImpulse)
 	{
 		Queue.Enqueue(
 			FContactInfo(
@@ -39,7 +39,7 @@ void UEJoltCallBackContactListener::OnContactAdded(const JPH::Body& inBody1, con
 				inBody2.GetID().GetIndexAndSequenceNumber(),
 				JoltHelpers::ToUEPos(inManifold.GetWorldSpaceContactPointOn1(i)),
 				JoltHelpers::ToUEPos(inManifold.GetWorldSpaceContactPointOn2(i)),
-				JoltHelpers::ToUESize(impulse.mContactImpulse),
+				JoltHelpers::ToUESize(impulse),
 				JoltHelpers::ToUESize(inManifold.mWorldSpaceNormal, false),
 				surface1,
 				surface2,

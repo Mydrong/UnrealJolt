@@ -25,15 +25,22 @@
 class UJoltSkeletalMeshComponent;
 class JoltAxisConstraint;
 class JoltPhysicsMaterial;
+class UBodySetup;
+struct FKBoxElem;
+struct FKSphereElem;
+struct FKSphylElem;
+struct FKConvexElem;
 
 UDELEGATE(BlueprintCallable)
 DECLARE_DYNAMIC_DELEGATE_FourParams(FNarrowPhaseQueryDelegate, const FVector&, hitLocation, const FVector&, hitNormal, bool, bHasHit, const int32, hitBodyID);
 
 struct FFrameHistory
 {
-	FTransform PreviousFrame;
-
-	FTransform CurrentFrame;
+	FVector PrevLocation;
+	FRotator PrevRotation;
+	
+	FVector CurrentLocation;
+	FRotator CurrentRotation;
 };
 
 USTRUCT(BlueprintType)
@@ -48,6 +55,22 @@ struct FCastShapeResult
 	FVector ContactLocationCastedShape;
 };
 
+struct FJoltBodyActor
+{
+	FJoltBodyActor(const JPH::BodyID* JoltBodyID, const TWeakObjectPtr<AActor>& Actor)
+		: JoltBodyID(JoltBodyID), Actor(Actor) {}
+
+	const JPH::BodyID* JoltBodyID;
+	TWeakObjectPtr<AActor> Actor;
+	FFrameHistory FrameHistory;
+};	
+
+struct FExtractedShape
+{
+	JPH::RefConst<JPH::Shape> Shape;
+	FTransform        WorldTransform;
+};
+
 typedef const std::function<void(const FVector&, const FVector&, const bool&, const uint32&, const UPhysicalMaterial*)> NarrowPhaseQueryCallback;
 
 DECLARE_MULTICAST_DELEGATE(FOnJoltReady);
@@ -59,7 +82,7 @@ class UNREALJOLT_API UJoltSubsystem : public UTickableWorldSubsystem
 
 public:
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", meta = (AdvancedDisplay = "Layer"))
-	int64 AddDynamicBody(AActor* body, const float& friction, const float& restitution, const float& mass, FName Layer = NAME_None);
+	int64 AddDynamicBody(AActor* Actor, const float& friction, const float& restitution, const float& mass, FName Layer = NAME_None);
 
 	/*
 	 * Adds a static body to the jolt physics system.
@@ -259,6 +282,57 @@ public:
 		float friction, float restitution, float mass,
 		FName layerName = NAME_None);
 
+	/// Creates a new dynamic body from a UE BodySetup and returns its newly allocated BodyID.
+	///
+	/// Will update actor position/rotation if provided.
+	int64 AddDynamicBodySetup(
+		AActor* actor,
+		const UBodySetup* bodySetup,
+		const FTransform& initialWorldTransform,
+		float friction, float restitution, float mass,
+		FName layerName = NAME_None);
+
+	/// Creates a new dynamic body from a UE FKBoxElem and returns its newly allocated BodyID.
+	///
+	/// Will update actor position/rotation if provided.
+	int64 AddDynamicBoxBody(
+		AActor* actor,
+		const TArray<FKBoxElem>& boxElems,
+		const FTransform& initialWorldTransform,
+		float friction, float restitution, float mass,
+		FName layerName = NAME_None);
+
+	
+	/// Creates a new dynamic body from a UE FKSphereElem and returns its newly allocated BodyID.
+	///
+	/// Will update actor position/rotation if provided.
+	int64 AddDynamicSphereBody(
+		AActor* actor,
+		const TArray<FKSphereElem>& sphereElems,
+		const FTransform& initialWorldTransform,
+		float friction, float restitution, float mass,
+		FName layerName = NAME_None);
+	
+	/// Creates a new dynamic body from a UE FKSphylElem and returns its newly allocated BodyID.
+	///
+	/// Will update actor position/rotation if provided.
+	int64 AddDynamicCapsuleBody(
+		AActor* actor,
+		const TArray<FKSphylElem>& capsuleElems,
+		const FTransform& initialWorldTransform,
+		float friction, float restitution, float mass,
+		FName layerName = NAME_None);
+
+	/// Creates a new dynamic body from UE FKConvexElems and returns its newly allocated BodyID.
+	///
+	/// Will update actor position/rotation if provided.
+	int64 AddDynamicConvexBody(
+		AActor* actor,
+		const TArray<FKConvexElem>& convexElems,
+		const FTransform& initialWorldTransform,
+		float friction, float restitution, float mass,
+		FName layerName = NAME_None);
+
 	// Mirror of AddDynamicBodyForExternalOwner: removes and destroys the body
 	// in Jolt AND drops the BodyIDBodyMap entry. 
 	void RemoveBodyForExternalOwner(const JPH::BodyID& bodyID);
@@ -346,8 +420,6 @@ private:
 
 	TMap<EPhysicalSurface, TWeakObjectPtr<const UPhysicalMaterial>> SurfaceUEMaterialMap;
 
-	TMap<const JPH::BodyID*, TWeakObjectPtr<AActor>> DynamicBodyIDActorMap;
-
 	TMap<const JPH::BodyID*, FTransform> SkeletalMeshBodyIDLocalTransformMap;
 
 	struct ConvexHullShapeHolder
@@ -368,8 +440,6 @@ private:
 	void DrawDebugLines() const;
 #endif
 
-	typedef const std::function<void(const JPH::Shape*, const FTransform&)>& PhysicsGeometryCallback;
-
 	void LoadLandscapeFromDataAsset();
 
 	static ALandscape* FindSingleLandscape(const UWorld* world);
@@ -383,13 +453,23 @@ private:
 
 #endif
 
-	void ExtractPhysicsGeometry(const AActor* actor, PhysicsGeometryCallback callback);
+	TArray<FExtractedShape> ExtractPhysicsGeometryFromActor(const AActor* actor);
 
-	void ExtractPhysicsGeometry(const UStaticMeshComponent* SMC, const FTransform& actorTransform, PhysicsGeometryCallback callback);
+	void ExtractPhysicsGeometryFromComponent(const UPrimitiveComponent* Component, const FTransform& componentTransform, TArray<FExtractedShape>& OutShapes);
 
-	void ExtractPhysicsGeometry(const FTransform& xformSoFar, const UBodySetup* bodySetup, PhysicsGeometryCallback callback);
+	void ExtractPhysicsGeometry(const FTransform& xformSoFar, const UBodySetup* bodySetup, TArray<FExtractedShape>& OutShapes);
 
-	void ExtractComplexPhysicsGeometry(const FTransform& xformSoFar, const UBodySetup* bodySetup, const FString& meshName, PhysicsGeometryCallback callback);
+	void ExtractAggGeomBoxes(const FTransform& xformSoFar, const UBodySetup* bodySetup, const FVector& scale, const JoltPhysicsMaterial* physicsMaterial, JPH::CompoundShapeSettings* compoundShapeSettings, TArray<FExtractedShape>& OutShapes);
+
+	void ExtractAggGeomSpheres(const FTransform& xformSoFar, const UBodySetup* bodySetup, const FVector& scale, const JoltPhysicsMaterial* physicsMaterial, JPH::CompoundShapeSettings* compoundShapeSettings, TArray<FExtractedShape>& OutShapes);
+
+	void ExtractAggGeomCapsules(const FTransform& xformSoFar, const UBodySetup* bodySetup, const FVector& scale, const JoltPhysicsMaterial* physicsMaterial, JPH::CompoundShapeSettings* compoundShapeSettings, TArray<FExtractedShape>& OutShapes);
+
+	void ExtractAggGeomConvex(const FTransform& xformSoFar, const UBodySetup* bodySetup, const FVector& scale, JPH::CompoundShapeSettings* compoundShapeSettings, TArray<FExtractedShape>& OutShapes);
+
+	static FVector ScaleCompoundChildLocation(const FVector& location, const FVector& scale);
+
+	void ExtractComplexPhysicsGeometry(const FTransform& xformSoFar, const UBodySetup* bodySetup, const FString& meshName, TArray<FExtractedShape>& OutShapes);
 
 	const JPH::Shape* ProcessShapeElement(const UShapeComponent* shapeComponent);
 
@@ -431,8 +511,8 @@ private:
 	double PhysicsAlpha_ = 0.0;
 
 	void RecordFrames();
-
-	TMap<const JPH::BodyID*, FFrameHistory> JoltBodyTransformHistory;
+	
+	TArray<FJoltBodyActor> JoltBodyActors;
 
 	TArray<TDelegate<void(float)>> PostInterpolationCallbacks;
 

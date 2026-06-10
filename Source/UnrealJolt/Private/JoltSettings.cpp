@@ -244,5 +244,7 @@ void UJoltSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChange
 	{
 		DefaultStaticLayer = validObjectLayerNames.Contains(StaticLayerName) ? StaticLayerName : (ObjectLayers.Num() > 0 ? ObjectLayers[0].Name : NAME_None);
 	}
+
+	SaveConfig();
 }
 #endif
