@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/DeveloperSettings.h"
 #include "JoltSettings.generated.h"
 
 USTRUCT(BlueprintType)
@@ -38,8 +39,8 @@ struct UNREALJOLT_API FJoltObjectLayer
 /**
  *
  */
-UCLASS(config = Jolt)
-class UNREALJOLT_API UJoltSettings : public UObject
+UCLASS(config = Jolt, defaultconfig, meta = (DisplayName = "Jolt Physics"))
+class UNREALJOLT_API UJoltSettings : public UDeveloperSettings
 {
 	GENERATED_BODY()
 public:

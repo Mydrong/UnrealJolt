@@ -63,7 +63,7 @@ void UJoltSkeletalMeshComponent::AddOwnPhysicsAsset()
 		StateFilter->AddToBodyIDAllowList(OwnBodyID);
 	}
 
-	JoltSubSystem->DynamicBodyIDActorMap.Add(&OwnBodyID, GetOwner());
+	JoltSubSystem->JoltBodyActors.Emplace(FJoltBodyActor{&OwnBodyID, GetOwner()});
 	BodyFilter = new JPH::IgnoreSingleBodyFilter(OwnBodyID);
 	UE_LOG(JoltSubSystemLogs, Log, TEXT("UJoltSkeletalMeshComponent::AddOwnPhysicsAsset: done setting up own rigid body"));
 }
@@ -99,15 +99,15 @@ const JPH::Shape* UJoltSkeletalMeshComponent::ExtractJoltShape(UJoltSubsystem* j
 
 	const JPH::Shape* extractedShape = nullptr;
 
-	std::function<void(const JPH::Shape*, const FTransform&)> callback =
-		[&extractedShape](const JPH::Shape* shape, const FTransform&) {
-			if (shape && !extractedShape)
-				extractedShape = shape;
-		};
-
 	for (const USkeletalBodySetup* skeletalBodySetup : PhysicsAsset->SkeletalBodySetups)
 	{
-		jolt->ExtractPhysicsGeometry(GetOwner()->GetActorTransform(), skeletalBodySetup, callback);
+		TArray<FExtractedShape> ExtractedShapes;
+		jolt->ExtractPhysicsGeometry(GetOwner()->GetActorTransform(), skeletalBodySetup, ExtractedShapes);
+		for (auto& ExtractedShape : ExtractedShapes)
+		{
+			if (ExtractedShape.Shape && !extractedShape)
+				extractedShape = ExtractedShape.Shape;
+		}
 	}
 
 	if (extractedShape && !CentreOfMassOffset.IsZero())

@@ -15,6 +15,7 @@ public class UnrealJolt : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
+				"DeveloperSettings",
 				"InputCore",
 				"UnrealJoltLibrary",
 				"Projects",
