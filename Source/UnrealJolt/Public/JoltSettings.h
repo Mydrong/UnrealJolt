@@ -169,6 +169,16 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Debug Rendering", meta = (EditCondition = "bEnableDebugRenderer"))
 	bool bDebugDrawHeightFields;
 
+	// Bodies farther than this distance (in cm) from the active camera are skipped.
+	// Set to 0 or lower to disable distance culling.
+	UPROPERTY(Config, EditAnywhere, Category = "Debug Rendering", meta = (EditCondition = "bEnableDebugRenderer", ClampMin = "0.0"))
+	float DebugDrawMaxDistance;
+
+	// Maximum number of bodies to draw each debug frame.
+	// Set to 0 or lower for no limit.
+	UPROPERTY(Config, EditAnywhere, Category = "Debug Rendering", meta = (EditCondition = "bEnableDebugRenderer", ClampMin = "0"))
+	int32 DebugDrawMaxBodies;
+
 	/*
 	 * Broadphase layers. Each broadphase layer becomes a separate bounding volume tree in Jolt's
 	 * broadphase. Typical setups have 2 (Static / Dynamic). Jolt's internal type is uint8 so the

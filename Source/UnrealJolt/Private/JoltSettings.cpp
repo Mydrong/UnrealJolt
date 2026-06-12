@@ -2,6 +2,8 @@
 
 #include "JoltSettings.h"
 
+#include "UObject/UnrealType.h"
+
 namespace
 {
 	const FName StaticLayerName(TEXT("Static"));
@@ -22,6 +24,8 @@ UJoltSettings::UJoltSettings(const FObjectInitializer& obj)
 	bDebugDrawDynamicBodies = true;
 	bDebugDrawKinematicBodies = true;
 	bDebugDrawHeightFields = true;
+	DebugDrawMaxDistance = 30000.0f;
+	DebugDrawMaxBodies = 500;
 	CustomBodyIDStart = 0;
 	StaticBodyIDStart = 21845,
 	DynamicBodyIDStart = 43690;
