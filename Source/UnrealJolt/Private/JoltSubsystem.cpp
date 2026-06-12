@@ -23,7 +23,6 @@
 #include "Chaos/TriangleMeshImplicitObject.h"
 #include "Chaos/Particles.h"
 #include "Chaos/ImplicitFwd.h"
-#include "Templates/Casts.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 #include "UObject/UObjectIterator.h"
@@ -94,9 +93,9 @@ void UJoltSubsystem::Deinitialize()
 		capsule = nullptr;
 	}
 
-	for (ConvexHullShapeHolder& convexShape : ConvexShapes)
+	for (const JPH::ConvexHullShape*& convexShape : ConvexShapes)
 	{
-		convexShape.Shape = nullptr;
+		convexShape = nullptr;
 	}
 
 	for (const JPH::HeightFieldShapeSettings*& hf : HeightFieldShapes)
@@ -298,11 +297,15 @@ void UJoltSubsystem::RecordFrames()
 void UJoltSubsystem::InterpolatePhysicsFrame(const double& alpha)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::InterpolatePhysicsFrame);
-	for (const FJoltBodyActor& JoltBodyActor : JoltBodyActors)
+	for (int32 i = JoltBodyActors.Num() - 1; i >= 0; --i)
 	{
+		FJoltBodyActor& JoltBodyActor = JoltBodyActors[i];
 		auto OwningActor = JoltBodyActor.Actor.Pin();
 		if (OwningActor == nullptr)
+		{
+			JoltBodyActors.RemoveAtSwap(i);
 			continue;
+		}
 		
 		OwningActor->SetActorLocationAndRotation(
 			FMath::Lerp(
@@ -411,6 +414,52 @@ int64 UJoltSubsystem::AddDynamicBody(AActor* Actor, const float& friction, const
 	return ID;
 }
 
+int64 UJoltSubsystem::AddDynamicShapes(
+	AActor* actor,
+	const FKAggregateGeom& aggregateGeom,
+	const FTransform& initialWorldTransform,
+	float friction, float restitution, float mass,
+	FName layerName)
+{
+	TArray<FExtractedShape> extractedShapes;
+	ExtractPhysicsGeometry(initialWorldTransform, aggregateGeom, nullptr, extractedShapes);
+
+	if (extractedShapes.Num() == 0)
+	{
+		UE_LOG(JoltSubSystemLogs, Error, TEXT("AddDynamicShapes failed: no collision shape could be extracted from AggregateGeom"));
+		return 0;
+	}
+
+	JPH::RefConst<JPH::Shape> shapeToUse = extractedShapes[0].Shape;
+	if (extractedShapes.Num() > 1)
+	{
+		JPH::StaticCompoundShapeSettings compoundShapeSettings;
+		for (auto& extracted : extractedShapes)
+		{
+			auto childLocalTransform = extracted.WorldTransform.GetRelativeTransform(initialWorldTransform);
+			compoundShapeSettings.AddShape(
+				JoltHelpers::ToJoltVec3(childLocalTransform.GetLocation()),
+				JoltHelpers::ToJoltRot(childLocalTransform.GetRotation()),
+				extracted.Shape);
+		}
+
+		JPH::Shape::ShapeResult compoundResult = compoundShapeSettings.Create();
+		if (!compoundResult.IsValid())
+		{
+			UE_LOG(JoltSubSystemLogs, Error, TEXT("AddDynamicShapes failed to create compound shape: %s"), *FString(compoundResult.GetError().c_str()));
+			return 0;
+		}
+		shapeToUse = compoundResult.Get();
+	}
+
+	auto bodyID = AddDynamicBodyCollision(shapeToUse.GetPtr(), initialWorldTransform, friction, restitution, mass, layerName);
+	if (bodyID != nullptr && actor != nullptr)
+	{
+		JoltBodyActors.Emplace(FJoltBodyActor{bodyID, actor});
+	}
+	return bodyID != nullptr ? bodyID->GetIndexAndSequenceNumber() : 0;
+}
+
 int64 UJoltSubsystem::AddStaticBody(const AActor* Body, const float& Friction, const float& Restitution, FName Layer)
 {
 	int64 ID = 0;
@@ -421,6 +470,19 @@ int64 UJoltSubsystem::AddStaticBody(const AActor* Body, const float& Friction, c
 	for (auto& Extracted : Shapes)
 	{
 		if (auto bodyID = AddStaticBodyCollision(Extracted.Shape, Extracted.WorldTransform, Friction, Restitution, Layer))
+			ID = bodyID->GetIndexAndSequenceNumber();
+	}
+	return ID;
+}
+
+int64 UJoltSubsystem::AddStaticShapes(const FKAggregateGeom& AggregateGeom, const FTransform& worldTransform, const float& friction, const float& restitution, FName Layer)
+{
+	int64 ID = 0;
+	TArray<FExtractedShape> Shapes;
+	ExtractPhysicsGeometry(worldTransform, AggregateGeom, nullptr, Shapes);
+	for (auto& Extracted : Shapes)
+	{
+		if (auto bodyID = AddStaticBodyCollision(Extracted.Shape, Extracted.WorldTransform, friction, restitution, Layer))
 			ID = bodyID->GetIndexAndSequenceNumber();
 	}
 	return ID;
@@ -574,26 +636,28 @@ void UJoltSubsystem::RayCastNarrowPhase(const FVector& start, const FVector& end
 
 void UJoltSubsystem::ExtractPhysicsGeometry(const FTransform& xformSoFar, const UBodySetup* bodySetup, TArray<FExtractedShape>& OutShapes)
 {
-	const FVector				scale = xformSoFar.GetScale3D();
+	if (!ensure(bodySetup != nullptr))
+		return;
+	
+	auto physicsMaterial = GetJoltPhysicsMaterial(bodySetup->GetPhysMaterial());
+	ExtractPhysicsGeometry(xformSoFar, bodySetup->AggGeom, physicsMaterial, OutShapes);
+}
+
+void UJoltSubsystem::ExtractPhysicsGeometry(const FTransform& xformSoFar, const FKAggregateGeom& aggregateGeom, const JoltPhysicsMaterial* physicsMaterial, TArray<FExtractedShape>& OutShapes)
+{
+	auto scale = xformSoFar.GetScale3D();
 	JPH::CompoundShapeSettings* compoundShapeSettings = nullptr;
 
-	if (!ensure(bodySetup != nullptr))
-	{
-		return;
-	}
-
-	const JoltPhysicsMaterial* physicsMaterial = GetJoltPhysicsMaterial(bodySetup->GetPhysMaterial());
-
-	//  if the total makes up more than 1, we have a compound shape configured in USkeletalMeshComponent
-	if (bodySetup->AggGeom.BoxElems.Num() + bodySetup->AggGeom.SphereElems.Num() + bodySetup->AggGeom.SphylElems.Num() > 1)
+	int shapeCount = aggregateGeom.BoxElems.Num() + aggregateGeom.SphereElems.Num() + aggregateGeom.SphylElems.Num() + aggregateGeom.ConvexElems.Num();
+	if (shapeCount > 1)
 	{
 		compoundShapeSettings = new JPH::StaticCompoundShapeSettings();
 	}
 
-	ExtractAggGeomBoxes(xformSoFar, bodySetup, scale, physicsMaterial, compoundShapeSettings, OutShapes);
-	ExtractAggGeomSpheres(xformSoFar, bodySetup, scale, physicsMaterial, compoundShapeSettings, OutShapes);
-	ExtractAggGeomCapsules(xformSoFar, bodySetup, scale, physicsMaterial, compoundShapeSettings, OutShapes);
-	ExtractAggGeomConvex(xformSoFar, bodySetup, scale, compoundShapeSettings, OutShapes);
+	ExtractAggGeomBoxes(xformSoFar, aggregateGeom, scale, physicsMaterial, compoundShapeSettings, OutShapes);
+	ExtractAggGeomSpheres(xformSoFar, aggregateGeom, scale, physicsMaterial, compoundShapeSettings, OutShapes);
+	ExtractAggGeomCapsules(xformSoFar, aggregateGeom, scale, physicsMaterial, compoundShapeSettings, OutShapes);
+	ExtractAggGeomConvex(xformSoFar, aggregateGeom, scale, physicsMaterial, compoundShapeSettings, OutShapes);
 
 	if (compoundShapeSettings)
 	{
@@ -611,9 +675,9 @@ void UJoltSubsystem::ExtractPhysicsGeometry(const FTransform& xformSoFar, const 
 	}
 }
 
-void UJoltSubsystem::ExtractAggGeomBoxes(const FTransform& xformSoFar, const UBodySetup* bodySetup, const FVector& scale, const JoltPhysicsMaterial* physicsMaterial, JPH::CompoundShapeSettings* compoundShapeSettings, TArray<FExtractedShape>& OutShapes)
+void UJoltSubsystem::ExtractAggGeomBoxes(const FTransform& xformSoFar, const FKAggregateGeom& aggregateGeom, const FVector& scale, const JoltPhysicsMaterial* physicsMaterial, JPH::CompoundShapeSettings* compoundShapeSettings, TArray<FExtractedShape>& OutShapes)
 {
-	for (const FKBoxElem& ueBox : bodySetup->AggGeom.BoxElems)
+	for (auto& ueBox : aggregateGeom.BoxElems)
 	{
 		FVector Dimensions = FVector(ueBox.X, ueBox.Y, ueBox.Z) * scale;
 		// We'll re-use based on just the LxWxH, including actor scale
@@ -624,7 +688,7 @@ void UJoltSubsystem::ExtractAggGeomBoxes(const FTransform& xformSoFar, const UBo
 		{
 			auto BoxTransform = ueBox.GetTransform();
 			compoundShapeSettings->AddShape(
-				JoltHelpers::ToJoltVec3(ScaleCompoundChildLocation(BoxTransform.GetLocation(), scale)),
+				JoltHelpers::ToJoltVec3(BoxTransform.GetLocation() * scale),
 				JoltHelpers::ToJoltRot(BoxTransform.GetRotation()),
 				joltShape);
 			continue;
@@ -637,9 +701,9 @@ void UJoltSubsystem::ExtractAggGeomBoxes(const FTransform& xformSoFar, const UBo
 	}
 }
 
-void UJoltSubsystem::ExtractAggGeomSpheres(const FTransform& xformSoFar, const UBodySetup* bodySetup, const FVector& scale, const JoltPhysicsMaterial* physicsMaterial, JPH::CompoundShapeSettings* compoundShapeSettings, TArray<FExtractedShape>& OutShapes)
+void UJoltSubsystem::ExtractAggGeomSpheres(const FTransform& xformSoFar, const FKAggregateGeom& aggregateGeom, const FVector& scale, const JoltPhysicsMaterial* physicsMaterial, JPH::CompoundShapeSettings* compoundShapeSettings, TArray<FExtractedShape>& OutShapes)
 {
-	for (const FKSphereElem& ueSphere : bodySetup->AggGeom.SphereElems)
+	for (auto& ueSphere : aggregateGeom.SphereElems)
 	{
 		// Only support uniform scale so use X
 		const JPH::SphereShape* joltShape = GetSphereCollisionShape(ueSphere.Radius * scale.X, physicsMaterial);
@@ -647,7 +711,7 @@ void UJoltSubsystem::ExtractAggGeomSpheres(const FTransform& xformSoFar, const U
 		{
 			auto SphereTransform = ueSphere.GetTransform();
 			compoundShapeSettings->AddShape(
-				JoltHelpers::ToJoltVec3(ScaleCompoundChildLocation(SphereTransform.GetLocation(), scale)),
+				JoltHelpers::ToJoltVec3(SphereTransform.GetLocation() * scale),
 				JoltHelpers::ToJoltRot(SphereTransform.GetRotation()),
 				joltShape);
 			continue;
@@ -660,10 +724,10 @@ void UJoltSubsystem::ExtractAggGeomSpheres(const FTransform& xformSoFar, const U
 	}
 }
 
-void UJoltSubsystem::ExtractAggGeomCapsules(const FTransform& xformSoFar, const UBodySetup* bodySetup, const FVector& scale, const JoltPhysicsMaterial* physicsMaterial, JPH::CompoundShapeSettings* compoundShapeSettings, TArray<FExtractedShape>& OutShapes)
+void UJoltSubsystem::ExtractAggGeomCapsules(const FTransform& xformSoFar, const FKAggregateGeom& aggregateGeom, const FVector& scale, const JoltPhysicsMaterial* physicsMaterial, JPH::CompoundShapeSettings* compoundShapeSettings, TArray<FExtractedShape>& OutShapes)
 {
 	// Sphyl == Capsule (??)
-	for (const FKSphylElem& Capsule : bodySetup->AggGeom.SphylElems)
+	for (auto& Capsule : aggregateGeom.SphylElems)
 	{
 		const FTransform CapsuleTransform = Capsule.GetTransform();
 
@@ -673,7 +737,7 @@ void UJoltSubsystem::ExtractAggGeomCapsules(const FTransform& xformSoFar, const 
 		if (compoundShapeSettings)
 		{
 			compoundShapeSettings->AddShape(
-				JoltHelpers::ToJoltVec3(ScaleCompoundChildLocation(CapsuleTransform.GetLocation(), scale)),
+				JoltHelpers::ToJoltVec3(CapsuleTransform.GetLocation() * scale),
 				JoltHelpers::ToJoltRot(CapsuleTransform.GetRotation()),
 				joltShape);
 			continue;
@@ -686,18 +750,21 @@ void UJoltSubsystem::ExtractAggGeomCapsules(const FTransform& xformSoFar, const 
 	}
 }
 
-void UJoltSubsystem::ExtractAggGeomConvex(const FTransform& xformSoFar, const UBodySetup* bodySetup, const FVector& scale, JPH::CompoundShapeSettings* compoundShapeSettings, TArray<FExtractedShape>& OutShapes)
+void UJoltSubsystem::ExtractAggGeomConvex(const FTransform& xformSoFar, const FKAggregateGeom& aggregateGeom, const FVector& scale, const JoltPhysicsMaterial* physicsMaterial, JPH::CompoundShapeSettings* compoundShapeSettings, TArray<FExtractedShape>& OutShapes)
 {
 	// Convex hull
-	for (uint16 i = 0; const FKConvexElem& ConVexElem : bodySetup->AggGeom.ConvexElems)
+	for (auto& ConVexElem : aggregateGeom.ConvexElems)
 	{
-		const JPH::ConvexHullShape* joltShape = GetConvexHullCollisionShape(bodySetup, i, scale);
-		i++;
+		auto joltShape = GetConvexHullCollisionShape(ConVexElem, scale, physicsMaterial);
+		if (joltShape == nullptr)
+		{
+			continue;
+		}
 		if (compoundShapeSettings)
 		{
 			auto ConvexTransform = ConVexElem.GetTransform();
 			compoundShapeSettings->AddShape(
-				JoltHelpers::ToJoltVec3(ScaleCompoundChildLocation(ConvexTransform.GetLocation(), scale)),
+				JoltHelpers::ToJoltVec3(ConvexTransform.GetLocation()* scale),
 				JoltHelpers::ToJoltRot(ConvexTransform.GetRotation()),
 				joltShape);
 			continue;
@@ -705,11 +772,6 @@ void UJoltSubsystem::ExtractAggGeomConvex(const FTransform& xformSoFar, const UB
 
 		OutShapes.Add({joltShape, xformSoFar});
 	}
-}
-
-FVector UJoltSubsystem::ScaleCompoundChildLocation(const FVector& location, const FVector& scale)
-{
-	return FVector(location.X * scale.X, location.Y * scale.Y, location.Z * scale.Z);
 }
 
 const JPH::Shape* UJoltSubsystem::ProcessShapeElement(const UShapeComponent* shapeComponent)
@@ -767,31 +829,10 @@ const UPhysicalMaterial* UJoltSubsystem::GetUEPhysicsMaterial(const JoltPhysicsM
 	return FoundPhysicsMaterial->Get();
 }
 
-const JPH::ConvexHullShape* UJoltSubsystem::GetConvexHullCollisionShape(const UBodySetup* bodySetup, int convexIndex, const FVector& scale, const JoltPhysicsMaterial* material)
+const JPH::ConvexHullShape* UJoltSubsystem::GetConvexHullCollisionShape(const FKConvexElem& convexElem, const FVector& scale, const JoltPhysicsMaterial* material)
 {
-	for (const ConvexHullShapeHolder& S : ConvexShapes)
-	{
-		if (S.BodySetup != bodySetup || S.HullIndex != convexIndex)
-		{
-			continue;
-		}
-
-		if (!S.Scale.Equals(scale))
-		{
-			continue;
-		}
-
-		if (material && S.Shape->GetMaterial() != material)
-		{
-			continue;
-		}
-
-		return S.Shape;
-	}
-
-	const FKConvexElem&	  Elem = bodySetup->AggGeom.ConvexElems[convexIndex];
 	JPH::Array<JPH::Vec3> points;
-	for (const FVector& P : Elem.VertexData)
+	for (auto& P : convexElem.VertexData)
 	{
 		points.push_back(JoltHelpers::ToJoltVec3(P * scale));
 	}
@@ -800,10 +841,15 @@ const JPH::ConvexHullShape* UJoltSubsystem::GetConvexHullCollisionShape(const UB
 	JPH::Shape::ShapeResult		 result;
 
 	JPH::Ref<JPH::ConvexHullShape> shape = new JPH::ConvexHullShape(val, result);
+	if (!result.IsValid())
+	{
+		UE_LOG(JoltSubSystemLogs, Error, TEXT("Failed to create convex collision shape: %s"), *FString(result.GetError().c_str()));
+		return nullptr;
+	}
 	shape->AddRef();
 	shape->SetMaterial(material);
 
-	ConvexShapes.Add(ConvexHullShapeHolder{ bodySetup, convexIndex, scale, shape });
+	ConvexShapes.Add(shape);
 	return shape;
 }
 
@@ -924,325 +970,6 @@ const JPH::BodyID* UJoltSubsystem::AddDynamicBodyForExternalOwner(
 	return AddDynamicBodyCollision(bodyID, shape, initialWorldTransform, friction, restitution, mass, layerName);
 }
 
-int64 UJoltSubsystem::AddDynamicBoxBody(
-	AActor* actor,
-	const TArray<FKBoxElem>& boxElems,
-	const FTransform& initialWorldTransform,
-	float friction, float restitution, float mass,
-	FName layerName)
-{
-	if (boxElems.Num() == 0)
-	{
-		UE_LOG(JoltSubSystemLogs, Warning, TEXT("AddDynamicBoxBody skipped: no box elems were provided"));
-		return 0;
-	}
-
-	const FVector scale = initialWorldTransform.GetScale3D();
-	auto ScaleChildLocation = [this, &scale](const FVector& location) {
-		return ScaleCompoundChildLocation(location, scale);
-	};
-
-	if (boxElems.Num() == 1)
-	{
-		const FKBoxElem& boxElem = boxElems[0];
-		const FVector dimensions = FVector(boxElem.X, boxElem.Y, boxElem.Z) * scale;
-		const JPH::BoxShape* joltShape = GetBoxCollisionShape(dimensions);
-		const FTransform shapeXform(boxElem.Rotation, boxElem.Center);
-		const FTransform worldShapeTransform = shapeXform * initialWorldTransform;
-		const JPH::BodyID* bodyID = AddDynamicBodyCollision(joltShape, worldShapeTransform, friction, restitution, mass, layerName);
-		if (bodyID != nullptr && actor != nullptr)
-		{
-			JoltBodyActors.Emplace(FJoltBodyActor{bodyID, actor});
-		}
-		return bodyID != nullptr ? bodyID->GetIndexAndSequenceNumber() : 0;
-	}
-
-	JPH::StaticCompoundShapeSettings compoundShapeSettings;
-	for (const FKBoxElem& boxElem : boxElems)
-	{
-		const FVector dimensions = FVector(boxElem.X, boxElem.Y, boxElem.Z) * scale;
-		const JPH::BoxShape* joltShape = GetBoxCollisionShape(dimensions);
-		const FTransform boxTransform = boxElem.GetTransform();
-		compoundShapeSettings.AddShape(
-			JoltHelpers::ToJoltVec3(ScaleChildLocation(boxTransform.GetLocation())),
-			JoltHelpers::ToJoltRot(boxTransform.GetRotation()),
-			joltShape);
-	}
-
-	JPH::Shape::ShapeResult compoundResult = compoundShapeSettings.Create();
-	if (!compoundResult.IsValid())
-	{
-		UE_LOG(JoltSubSystemLogs, Error, TEXT("AddDynamicBoxBody failed: %s"), *FString(compoundResult.GetError().c_str()));
-		return 0;
-	}
-
-	const JPH::BodyID* bodyID = AddDynamicBodyCollision(compoundResult.Get(), initialWorldTransform, friction, restitution, mass, layerName);
-	if (bodyID != nullptr && actor != nullptr)
-	{
-		JoltBodyActors.Emplace(FJoltBodyActor{bodyID, actor});
-	}
-	return bodyID != nullptr ? bodyID->GetIndexAndSequenceNumber() : 0;
-}
-
-int64 UJoltSubsystem::AddDynamicSphereBody(
-	AActor* actor,
-	const TArray<FKSphereElem>& sphereElems,
-	const FTransform& initialWorldTransform,
-	float friction, float restitution, float mass,
-	FName layerName)
-{
-	if (sphereElems.Num() == 0)
-	{
-		UE_LOG(JoltSubSystemLogs, Warning, TEXT("AddDynamicSphereBody skipped: no sphere elems were provided"));
-		return 0;
-	}
-
-	const FVector scale = initialWorldTransform.GetScale3D();
-	auto ScaleChildLocation = [this, &scale](const FVector& location) {
-		return ScaleCompoundChildLocation(location, scale);
-	};
-
-	if (sphereElems.Num() == 1)
-	{
-		const FKSphereElem& sphereElem = sphereElems[0];
-		const JPH::SphereShape* joltShape = GetSphereCollisionShape(sphereElem.Radius * scale.X);
-		const FTransform shapeXform(FRotator::ZeroRotator, sphereElem.Center);
-		const FTransform worldShapeTransform = shapeXform * initialWorldTransform;
-		const JPH::BodyID* bodyID = AddDynamicBodyCollision(joltShape, worldShapeTransform, friction, restitution, mass, layerName);
-		if (bodyID != nullptr && actor != nullptr)
-		{
-			JoltBodyActors.Emplace(FJoltBodyActor{bodyID, actor});
-		}
-		return bodyID != nullptr ? bodyID->GetIndexAndSequenceNumber() : 0;
-	}
-
-	JPH::StaticCompoundShapeSettings compoundShapeSettings;
-	for (const FKSphereElem& sphereElem : sphereElems)
-	{
-		const JPH::SphereShape* joltShape = GetSphereCollisionShape(sphereElem.Radius * scale.X);
-		const FTransform sphereTransform = sphereElem.GetTransform();
-		compoundShapeSettings.AddShape(
-			JoltHelpers::ToJoltVec3(ScaleChildLocation(sphereTransform.GetLocation())),
-			JoltHelpers::ToJoltRot(sphereTransform.GetRotation()),
-			joltShape);
-	}
-
-	JPH::Shape::ShapeResult compoundResult = compoundShapeSettings.Create();
-	if (!compoundResult.IsValid())
-	{
-		UE_LOG(JoltSubSystemLogs, Error, TEXT("AddDynamicSphereBody failed: %s"), *FString(compoundResult.GetError().c_str()));
-		return 0;
-	}
-
-	const JPH::BodyID* bodyID = AddDynamicBodyCollision(compoundResult.Get(), initialWorldTransform, friction, restitution, mass, layerName);
-	if (bodyID != nullptr && actor != nullptr)
-	{
-		JoltBodyActors.Emplace(FJoltBodyActor{bodyID, actor});
-	}
-	return bodyID != nullptr ? bodyID->GetIndexAndSequenceNumber() : 0;
-}
-
-int64 UJoltSubsystem::AddDynamicCapsuleBody(
-	AActor* actor,
-	const TArray<FKSphylElem>& capsuleElems,
-	const FTransform& initialWorldTransform,
-	float friction, float restitution, float mass,
-	FName layerName)
-{
-	if (capsuleElems.Num() == 0)
-	{
-		UE_LOG(JoltSubSystemLogs, Warning, TEXT("AddDynamicCapsuleBody skipped: no capsule elems were provided"));
-		return 0;
-	}
-
-	const FVector scale = initialWorldTransform.GetScale3D();
-	auto ScaleChildLocation = [this, &scale](const FVector& location) {
-		return ScaleCompoundChildLocation(location, scale);
-	};
-
-	if (capsuleElems.Num() == 1)
-	{
-		const FKSphylElem& capsuleElem = capsuleElems[0];
-		const JPH::CapsuleShape* joltShape = GetCapsuleCollisionShape(capsuleElem.Radius * scale.X, capsuleElem.Length * scale.Z);
-		const FTransform capsuleTransform = capsuleElem.GetTransform();
-		const FTransform shapeXform(capsuleTransform.GetRotation(), capsuleTransform.GetLocation());
-		const FTransform worldShapeTransform = shapeXform * initialWorldTransform;
-		const JPH::BodyID* bodyID = AddDynamicBodyCollision(joltShape, worldShapeTransform, friction, restitution, mass, layerName);
-		if (bodyID != nullptr && actor != nullptr)
-		{
-			JoltBodyActors.Emplace(FJoltBodyActor{bodyID, actor});
-		}
-		return bodyID != nullptr ? bodyID->GetIndexAndSequenceNumber() : 0;
-	}
-
-	JPH::StaticCompoundShapeSettings compoundShapeSettings;
-	for (const FKSphylElem& capsuleElem : capsuleElems)
-	{
-		const JPH::CapsuleShape* joltShape = GetCapsuleCollisionShape(capsuleElem.Radius * scale.X, capsuleElem.Length * scale.Z);
-		const FTransform capsuleTransform = capsuleElem.GetTransform();
-		compoundShapeSettings.AddShape(
-			JoltHelpers::ToJoltVec3(ScaleChildLocation(capsuleTransform.GetLocation())),
-			JoltHelpers::ToJoltRot(capsuleTransform.GetRotation()),
-			joltShape);
-	}
-
-	JPH::Shape::ShapeResult compoundResult = compoundShapeSettings.Create();
-	if (!compoundResult.IsValid())
-	{
-		UE_LOG(JoltSubSystemLogs, Error, TEXT("AddDynamicCapsuleBody failed: %s"), *FString(compoundResult.GetError().c_str()));
-		return 0;
-	}
-
-	const JPH::BodyID* bodyID = AddDynamicBodyCollision(compoundResult.Get(), initialWorldTransform, friction, restitution, mass, layerName);
-	if (bodyID != nullptr && actor != nullptr)
-	{
-		JoltBodyActors.Emplace(FJoltBodyActor{bodyID, actor});
-	}
-	return bodyID != nullptr ? bodyID->GetIndexAndSequenceNumber() : 0;
-}
-
-int64 UJoltSubsystem::AddDynamicConvexBody(
-	AActor* actor,
-	const TArray<FKConvexElem>& convexElems,
-	const FTransform& initialWorldTransform,
-	float friction, float restitution, float mass,
-	FName layerName)
-{
-	if (convexElems.Num() == 0)
-	{
-		UE_LOG(JoltSubSystemLogs, Warning, TEXT("AddDynamicConvexBody skipped: no convex elems were provided"));
-		return 0;
-	}
-
-	auto CreateConvexShape = [&](const FKConvexElem& convexElem) -> JPH::Ref<JPH::ConvexHullShape>
-	{
-		if (convexElem.VertexData.Num() == 0)
-		{
-			UE_LOG(JoltSubSystemLogs, Error, TEXT("AddDynamicConvexBody failed: convex element has no vertices"));
-			return nullptr;
-		}
-
-		const FVector scale = initialWorldTransform.GetScale3D();
-		JPH::Array<JPH::Vec3> points;
-		points.reserve(convexElem.VertexData.Num());
-		for (const FVector& point : convexElem.VertexData)
-		{
-			points.push_back(JoltHelpers::ToJoltVec3(point * scale));
-		}
-
-		JPH::ConvexHullShapeSettings convexSettings(points);
-		JPH::Shape::ShapeResult convexResult;
-		JPH::Ref<JPH::ConvexHullShape> convexShape = new JPH::ConvexHullShape(convexSettings, convexResult);
-		if (!convexResult.IsValid())
-		{
-			UE_LOG(JoltSubSystemLogs, Error, TEXT("AddDynamicConvexBody failed: %s"), *FString(convexResult.GetError().c_str()));
-			return nullptr;
-		}
-
-		convexShape->AddRef();
-		return convexShape;
-	};
-
-	if (convexElems.Num() == 1)
-	{
-		const FKConvexElem& convexElem = convexElems[0];
-		JPH::Ref<JPH::ConvexHullShape> joltShape = CreateConvexShape(convexElem);
-		if (joltShape == nullptr)
-		{
-			return 0;
-		}
-		const FTransform convexTransform = convexElem.GetTransform();
-		const FTransform shapeXform(convexTransform.GetRotation(), convexTransform.GetLocation());
-		const FTransform worldShapeTransform = shapeXform * initialWorldTransform;
-		const JPH::BodyID* bodyID = AddDynamicBodyCollision(joltShape, worldShapeTransform, friction, restitution, mass, layerName);
-		if (bodyID != nullptr && actor != nullptr)
-		{
-			JoltBodyActors.Emplace(FJoltBodyActor{bodyID, actor});
-		}
-		return bodyID != nullptr ? bodyID->GetIndexAndSequenceNumber() : 0;
-	}
-
-	const FVector scale = initialWorldTransform.GetScale3D();
-	auto ScaleChildLocation = [this, &scale](const FVector& location) {
-		return ScaleCompoundChildLocation(location, scale);
-	};
-	JPH::StaticCompoundShapeSettings compoundShapeSettings;
-	TArray<JPH::Ref<JPH::ConvexHullShape>> convexShapes;
-	convexShapes.Reserve(convexElems.Num());
-	for (const FKConvexElem& convexElem : convexElems)
-	{
-		JPH::Ref<JPH::ConvexHullShape> joltShape = CreateConvexShape(convexElem);
-		if (joltShape == nullptr)
-		{
-			return 0;
-		}
-		convexShapes.Add(joltShape);
-		const FTransform convexTransform = convexElem.GetTransform();
-		compoundShapeSettings.AddShape(
-			JoltHelpers::ToJoltVec3(ScaleChildLocation(convexTransform.GetLocation())),
-			JoltHelpers::ToJoltRot(convexTransform.GetRotation()),
-			joltShape);
-	}
-
-	JPH::Shape::ShapeResult compoundResult = compoundShapeSettings.Create();
-	if (!compoundResult.IsValid())
-	{
-		UE_LOG(JoltSubSystemLogs, Error, TEXT("AddDynamicConvexBody failed: %s"), *FString(compoundResult.GetError().c_str()));
-		return 0;
-	}
-
-	const JPH::BodyID* bodyID = AddDynamicBodyCollision(compoundResult.Get(), initialWorldTransform, friction, restitution, mass, layerName);
-	if (bodyID != nullptr && actor != nullptr)
-	{
-		JoltBodyActors.Emplace(FJoltBodyActor{bodyID, actor});
-	}
-	return bodyID != nullptr ? bodyID->GetIndexAndSequenceNumber() : 0;
-}
-
-int64 UJoltSubsystem::AddDynamicBodySetup(
-	AActor* actor,
-	const UBodySetup* bodySetup,
-	const FTransform& initialWorldTransform,
-	float friction, float restitution, float mass,
-	FName layerName)
-{
-	if (bodySetup == nullptr)
-	{
-		UE_LOG(JoltSubSystemLogs, Error, TEXT("AddDynamicBodyForExternalOwner failed: BodySetup is null"));
-		return 0;
-	}
-
-	TArray<FExtractedShape> extractedShapes;
-
-	switch (bodySetup->CollisionTraceFlag)
-	{
-		case ECollisionTraceFlag::CTF_UseComplexAsSimple:
-			ExtractComplexPhysicsGeometry(initialWorldTransform, bodySetup, bodySetup->GetName(), extractedShapes);
-			break;
-		default:
-			ExtractPhysicsGeometry(initialWorldTransform, bodySetup, extractedShapes);
-			break;
-	}
-
-	if (extractedShapes.Num() == 0)
-	{
-		UE_LOG(JoltSubSystemLogs, Error, TEXT("AddDynamicBodyForExternalOwner failed: no collision shape could be extracted from BodyInstance"));
-		return 0;
-	}
-
-	if (extractedShapes.Num() > 1)
-	{
-		UE_LOG(JoltSubSystemLogs, Warning, TEXT("AddDynamicBodyForExternalOwner extracted %d shapes; creating body from first extracted shape"), extractedShapes.Num());
-	}
-
-	const JPH::BodyID* bodyID = AddDynamicBodyCollision(extractedShapes[0].Shape, extractedShapes[0].WorldTransform, friction, restitution, mass, layerName);
-	if (bodyID != nullptr && actor != nullptr)
-	{
-		JoltBodyActors.Emplace(FJoltBodyActor{bodyID, actor});
-	}
-	return bodyID != nullptr ? bodyID->GetIndexAndSequenceNumber() : 0;
-}
-
 const JPH::BodyID* UJoltSubsystem::AddDynamicBodyCollision(const JPH::Shape* shape, const FTransform& initialWorldTransform, float friction, float restitution, float mass, FName layerName)
 {
 	JPH::BodyCreationSettings shapeSettings(
@@ -1356,14 +1083,15 @@ const JPH::BodyID* UJoltSubsystem::AddBodyToSimulation(const JPH::BodyID* bodyID
 	return bodyID;
 }
 
-void UJoltSubsystem::RemoveBodyForExternalOwner(const JPH::BodyID& bodyID)
+void UJoltSubsystem::RemoveBodyForExternalOwner(int64 bodyID)
 {
-	if (bodyID.IsInvalid() || BodyInterface == nullptr)
+	JPH::BodyID JoltBodyID = JPH::BodyID(bodyID);
+	if (JoltBodyID.IsInvalid() || BodyInterface == nullptr)
 		return;
 
-	BodyIDBodyMap.Remove(bodyID.GetIndexAndSequenceNumber());
-	BodyInterface->RemoveBody(bodyID);
-	BodyInterface->DestroyBody(bodyID);
+	BodyIDBodyMap.Remove(JoltBodyID.GetIndexAndSequenceNumber());
+	BodyInterface->RemoveBody(JoltBodyID);
+	BodyInterface->DestroyBody(JoltBodyID);
 }
 
 TArray<int32> UJoltSubsystem::CollideShape(const UShapeComponent* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& offset)
@@ -1930,6 +1658,11 @@ void UJoltSubsystem::JoltSetPhysicsLocationAndRotation(const int32& bodyID, cons
 	GetBodyInterface()->SetPositionAndRotation(JPH::BodyID(bodyID), JoltHelpers::ToJoltPos(locationWS), JoltHelpers::ToJoltRot(rotationWS), JPH::EActivation::Activate);
 }
 
+void UJoltSubsystem::JoltSetPhysicsLocationRotationAndVelocity(const int32& bodyID, const FVector& locationWS, const FQuat& rotationWS, const FVector& linearVelocity, const FVector& angularVelocity) const
+{
+	GetBodyInterface()->SetPositionRotationAndVelocity(JPH::BodyID(bodyID), JoltHelpers::ToJoltPos(locationWS), JoltHelpers::ToJoltRot(rotationWS), JoltHelpers::ToJoltVec3(linearVelocity), JoltHelpers::ToJoltVec3(angularVelocity));
+}
+
 void UJoltSubsystem::JoltSetPhysicsLocationAndRotation(const JPH::BodyID& bodyID, const FVector& locationWS, const FQuat& rotationWS) const
 {
 	GetBodyInterface()->SetPositionAndRotation(bodyID, JoltHelpers::ToJoltPos(locationWS), JoltHelpers::ToJoltRot(rotationWS), JPH::EActivation::Activate);
@@ -1963,6 +1696,11 @@ void UJoltSubsystem::JoltSetPhysicsRotation(const JPH::BodyID& bodyID, const FQu
 void UJoltSubsystem::JoltSetPhysicsRotation(const int64& bodyID, const FQuat& rotationWS) const
 {
 	GetBodyInterface()->SetRotation(JPH::BodyID(bodyID), JoltHelpers::ToJoltRot(rotationWS), JPH::EActivation::Activate);
+}
+
+void UJoltSubsystem::JoltMoveKinematic(const int64& bodyID, const FVector& locationWS, const FQuat& rotationWS, float DeltaTime) const
+{
+	GetBodyInterface()->MoveKinematic(JPH::BodyID(bodyID), JoltHelpers::ToJoltPos(locationWS), JoltHelpers::ToJoltRot(rotationWS), DeltaTime);
 }
 
 

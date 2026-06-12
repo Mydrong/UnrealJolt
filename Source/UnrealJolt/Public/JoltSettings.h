@@ -39,7 +39,7 @@ struct UNREALJOLT_API FJoltObjectLayer
 /**
  *
  */
-UCLASS(config = Jolt, defaultconfig, meta = (DisplayName = "Jolt Physics"))
+UCLASS(config = Jolt)
 class UNREALJOLT_API UJoltSettings : public UDeveloperSettings
 {
 	GENERATED_BODY()
