@@ -172,15 +172,15 @@ void UJoltSkeletalMeshComponent::LoadJoltSubsystem(UJoltSubsystem* joltSubsystem
 	AddOwnPhysicsAsset();
 }
 
-void UJoltSkeletalMeshComponent::RayCastNarrowPhaseIgnoreSelf(const FVector& start, const FVector& end, NarrowPhaseQueryCallback& hitCallback) const
+FRaycastResult UJoltSkeletalMeshComponent::RayCastNarrowPhaseIgnoreSelf(const FVector& start, const FVector& end) const
 {
 	if (!ensureMsgf(JoltSubSystem != nullptr && BodyFilter != nullptr,
 			TEXT("%hs: JoltSubSystem or BodyFilter not set on %s"),
 			__FUNCTION__, *GetName()))
 	{
-		return;
+		return FRaycastResult{};
 	}
-	JoltSubSystem->RayCastNarrowPhase(start, end, hitCallback, *BodyFilter);
+	return JoltSubSystem->RayCastNarrowPhase(start, end, *BodyFilter);
 }
 
 void UJoltSkeletalMeshComponent::JoltSetLinearAndAngularVelocity(const FVector& velocity, const FVector& angularVelocity) const

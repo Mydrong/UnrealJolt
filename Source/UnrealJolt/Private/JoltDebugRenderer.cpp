@@ -266,7 +266,7 @@ void UEJoltDebugRenderer::DrawPendingCapsules()
 {
 	for (auto& Capsule : DrawFilter.PendingCapsuleDraws)
 	{
-		DrawDebugCapsule(World, Capsule.Center, Capsule.HalfHeight, Capsule.Radius, Capsule.Rotation, Capsule.Color, false, -1.0f);
+		DrawDebugCapsule(Capsule.Center, Capsule.HalfHeight, Capsule.Radius, Capsule.Rotation, Capsule.Color, false, -1.0f);
 	}
 }
 
@@ -296,10 +296,7 @@ void UEJoltDebugRenderer::DrawTriangle(JPH::RVec3Arg inV1, JPH::RVec3Arg inV2, J
 	FVector V2 = JoltHelpers::ToUEPos(inV2);
 	FVector V3 = JoltHelpers::ToUEPos(inV3);
 	FColor  Color = JoltHelpers::ToUEColor(inColor);
-
-	DrawDebugLine(World, V1, V2, Color, false, -1.0f);
-	DrawDebugLine(World, V2, V3, Color, false, -1.0f);
-	DrawDebugLine(World, V3, V1, Color, false, -1.0f);
+	DrawDebugTriangle(V1, V2, V3, Color, false, -1.0f);
 }
 
 void UEJoltDebugRenderer::DrawText3D(JPH::RVec3Arg inPosition, const JPH::string_view& inString, JPH::ColorArg inColor, float inHeight)
@@ -314,4 +311,145 @@ void UEJoltDebugRenderer::DrawText3D(JPH::RVec3Arg inPosition, const JPH::string
 	FString TextString(inString.data(), static_cast<int32>(inString.size()));
 
 	DrawDebugString(World, Position, TextString, nullptr, Color, -1.0f, false, inHeight);
+}
+
+void UEJoltDebugRenderer::DrawDebugSphere(const FVector& Center, float Radius, const FColor& Color, bool bPersistent, float LifeTime)
+{
+	if (!EnsureWorld())
+	{
+		return;
+	}
+
+	::DrawDebugSphere(World, Center, Radius, 12, Color, bPersistent, LifeTime);
+}
+
+void UEJoltDebugRenderer::DrawDebugBox(const FVector& Center, const FVector& Extent, const FQuat& Rotation, const FColor& Color, bool bPersistent, float LifeTime)
+{
+	if (!EnsureWorld())
+	{
+		return;
+	}
+
+	::DrawDebugBox(World, Center, Extent, Rotation, Color, bPersistent, LifeTime);
+}
+
+void UEJoltDebugRenderer::DrawDebugTriangle(const FVector& V1, const FVector& V2, const FVector& V3, const FColor& Color, bool bPersistent, float LifeTime)
+{
+	if (!EnsureWorld())
+	{
+		return;
+	}
+
+	::DrawDebugLine(World, V1, V2, Color, bPersistent, LifeTime);
+	::DrawDebugLine(World, V2, V3, Color, bPersistent, LifeTime);
+	::DrawDebugLine(World, V3, V1, Color, bPersistent, LifeTime);
+}
+
+void UEJoltDebugRenderer::DrawDebugCapsule(const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, bool bPersistent, float LifeTime)
+{
+	if (!EnsureWorld())
+	{
+		return;
+	}
+
+	::DrawDebugCapsule(World, Center, HalfHeight, Radius, Rotation, Color, bPersistent, LifeTime);
+}
+
+void UEJoltDebugRenderer::DrawDebugCylinder(const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, bool bPersistent, float LifeTime)
+{
+	if (!EnsureWorld())
+	{
+		return;
+	}
+
+	// Draw cylinder as two circles connected by lines
+	const int32 Segments = 16;
+	const float AngleStep = 2.0f * PI / Segments;
+
+	FVector Top = Center + Rotation.RotateVector(FVector(0, 0, HalfHeight));
+	FVector Bottom = Center + Rotation.RotateVector(FVector(0, 0, -HalfHeight));
+
+	TArray<FVector> TopCircle;
+	TArray<FVector> BottomCircle;
+
+	for (int32 i = 0; i < Segments; ++i)
+	{
+		float   Angle = i * AngleStep;
+		FVector Offset(Radius * FMath::Cos(Angle), Radius * FMath::Sin(Angle), 0);
+		TopCircle.Add(Top + Rotation.RotateVector(Offset));
+		BottomCircle.Add(Bottom + Rotation.RotateVector(Offset));
+	}
+
+	// Draw top and bottom circles
+	for (int32 i = 0; i < Segments; ++i)
+	{
+		int32 NextI = (i + 1) % Segments;
+		::DrawDebugLine(World, TopCircle[i], TopCircle[NextI], Color, bPersistent, LifeTime);
+		::DrawDebugLine(World, BottomCircle[i], BottomCircle[NextI], Color, bPersistent, LifeTime);
+		::DrawDebugLine(World, TopCircle[i], BottomCircle[i], Color, bPersistent, LifeTime);
+	}
+}
+
+void UEJoltDebugRenderer::DrawDebugConvexHull(const TArray<FVector>& Points, const FColor& Color, bool bPersistent, float LifeTime)
+{
+	if (!EnsureWorld() || Points.Num() < 4)
+	{
+		return;
+	}
+
+	// Draw all edges between points - simple approach for convex hull visualization
+	// A more sophisticated approach would compute the actual hull, but this provides good feedback
+	for (int32 i = 0; i < Points.Num(); ++i)
+	{
+		for (int32 j = i + 1; j < Points.Num(); ++j)
+		{
+			::DrawDebugLine(World, Points[i], Points[j], Color, bPersistent, LifeTime);
+		}
+	}
+}
+
+void UEJoltDebugRenderer::DrawDebugMesh(const TArray<FVector>& Vertices, const TArray<uint32>& Indices, const FColor& Color, bool bPersistent, float LifeTime)
+{
+	if (!EnsureWorld() || Vertices.Num() < 3 || Indices.Num() < 3)
+	{
+		return;
+	}
+
+	// Draw mesh as triangles
+	for (int32 i = 0; i < Indices.Num(); i += 3)
+	{
+		if (i + 2 < Indices.Num())
+		{
+			FVector V0 = Vertices[Indices[i]];
+			FVector V1 = Vertices[Indices[i + 1]];
+			FVector V2 = Vertices[Indices[i + 2]];
+			DrawDebugTriangle(V0, V1, V2, Color, bPersistent, LifeTime);
+		}
+	}
+}
+
+void UEJoltDebugRenderer::DrawDebugPlane(const FVector& Center, const FVector& Normal, float Size, const FColor& Color, bool bPersistent, float LifeTime)
+{
+	if (!EnsureWorld())
+	{
+		return;
+	}
+
+	// Create an orthonormal basis with Normal as Z
+	FVector X, Y;
+	Normal.FindBestAxisVectors(X, Y);
+
+	FVector Corner1 = Center + X * Size + Y * Size;
+	FVector Corner2 = Center - X * Size + Y * Size;
+	FVector Corner3 = Center - X * Size - Y * Size;
+	FVector Corner4 = Center + X * Size - Y * Size;
+
+	// Draw plane square
+	::DrawDebugLine(World, Corner1, Corner2, Color, bPersistent, LifeTime);
+	::DrawDebugLine(World, Corner2, Corner3, Color, bPersistent, LifeTime);
+	::DrawDebugLine(World, Corner3, Corner4, Color, bPersistent, LifeTime);
+	::DrawDebugLine(World, Corner4, Corner1, Color, bPersistent, LifeTime);
+
+	// Draw normal line
+	::DrawDebugLine(World, Center, Center + Normal * Size, Color, bPersistent, LifeTime);
 }

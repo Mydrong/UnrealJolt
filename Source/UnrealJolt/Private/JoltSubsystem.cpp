@@ -268,6 +268,7 @@ void UJoltSubsystem::Tick(float deltaSeconds)
 
 void UJoltSubsystem::StepPhysics(bool bWithCallbacks)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::StepPhysics);
 	bWithCallbacks
 		? JoltWorker->StepPhysicsWithCallBacks()
 		: JoltWorker->StepPhysics();
@@ -617,21 +618,14 @@ void UJoltSubsystem::ExtractComplexPhysicsGeometry(const FTransform& xformSoFar,
 	OutShapes.Add({res.Get(), xformSoFar});
 }
 
-void UJoltSubsystem::RayCastNarrowPhase(const FVector& start, const FVector& end, const FNarrowPhaseQueryDelegate& hitCallback)
+FRaycastResult UJoltSubsystem::RayCastNarrowPhase(const FVector& start, const FVector& end)
 {
-	if (!hitCallback.IsBound())
-	{
-		UE_LOG(JoltSubSystemLogs, Error, TEXT("hitcallback not bound"));
-		return;
-	}
+	return RayCastNarrowPhase(start, end, {});
+}
 
-	RayCastNarrowPhase(
-		start,
-		end,
-		[&hitCallback](const FVector& hitLoc, const FVector& hitNormal, const bool& hasHit, const uint32& bodyID, const UPhysicalMaterial*) {
-			// TODO: add support to return material
-			hitCallback.Execute(hitLoc, hitNormal, (hasHit), bodyID);
-		});
+TArray<FRaycastResult> UJoltSubsystem::RayCastBroadPhase(const FVector& start, const FVector& end)
+{
+	return RayCastBroadPhase(start, end, {});
 }
 
 void UJoltSubsystem::ExtractPhysicsGeometry(const FTransform& xformSoFar, const UBodySetup* bodySetup, TArray<FExtractedShape>& OutShapes)
@@ -793,7 +787,10 @@ const JPH::Shape* UJoltSubsystem::ProcessShapeElement(const UShapeComponent* sha
 	}
 	else if (const UCapsuleComponent* capsuleComponent = Cast<const UCapsuleComponent>(shapeComponent))
 	{
-		return GetCapsuleCollisionShape(capsuleComponent->GetScaledCapsuleRadius(), capsuleComponent->GetScaledCapsuleHalfHeight());
+		float radius = capsuleComponent->GetScaledCapsuleRadius();
+		float halfHeight = capsuleComponent->GetScaledCapsuleHalfHeight();
+		float cylinderHeight = FMath::Max(0.0f, (halfHeight - radius) * 2.0f);
+		return GetCapsuleCollisionShape(radius, cylinderHeight);
 	}
 
 	UE_LOG(LogTemp, Warning, TEXT("Unknown or unsupported UShapeComponent type"));
@@ -1111,7 +1108,7 @@ TArray<int32> UJoltSubsystem::CollideShape(const UShapeComponent* shape, const F
 #ifdef JPH_DEBUG_RENDERER
 	if (JoltSettings->bEnableDebugRenderer)
 	{
-		DrawDebugSphere(GetWorld(), shapeCOM.GetLocation(), SphereComponent->GetScaledSphereRadius(), 32, FColor::Magenta, false, 2.0f);
+		DrawDebugSphere(shapeCOM.GetLocation(), SphereComponent->GetScaledSphereRadius(), FColor::Magenta, false, 2.0f);
 	}
 #endif
 
@@ -1131,6 +1128,86 @@ TArray<int32> UJoltSubsystem::CollideShape(const UShapeComponent* shape, const F
 	return foundBodyIDs;
 }
 
+void UJoltSubsystem::DrawDebugSphere(const FVector& Center, float Radius, const FColor& Color, bool bPersistent, float LifeTime) const
+{
+#ifdef JPH_DEBUG_RENDERER
+	if (UEJoltDebugRenderer* DebugRenderer = GetDebugRendererForDraw())
+	{
+		DebugRenderer->DrawDebugSphere(Center, Radius, Color, bPersistent, LifeTime);
+	}
+#endif
+}
+
+void UJoltSubsystem::DrawDebugBox(const FVector& Center, const FVector& Extent, const FQuat& Rotation, const FColor& Color, bool bPersistent, float LifeTime) const
+{
+#ifdef JPH_DEBUG_RENDERER
+	if (UEJoltDebugRenderer* DebugRenderer = GetDebugRendererForDraw())
+	{
+		DebugRenderer->DrawDebugBox(Center, Extent, Rotation, Color, bPersistent, LifeTime);
+	}
+#endif
+}
+
+void UJoltSubsystem::DrawDebugTriangle(const FVector& V1, const FVector& V2, const FVector& V3, const FColor& Color, bool bPersistent, float LifeTime) const
+{
+#ifdef JPH_DEBUG_RENDERER
+	if (UEJoltDebugRenderer* DebugRenderer = GetDebugRendererForDraw())
+	{
+		DebugRenderer->DrawDebugTriangle(V1, V2, V3, Color, bPersistent, LifeTime);
+	}
+#endif
+}
+
+void UJoltSubsystem::DrawDebugCapsule(const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, bool bPersistent, float LifeTime) const
+{
+#ifdef JPH_DEBUG_RENDERER
+	if (UEJoltDebugRenderer* DebugRenderer = GetDebugRendererForDraw())
+	{
+		DebugRenderer->DrawDebugCapsule(Center, HalfHeight, Radius, Rotation, Color, bPersistent, LifeTime);
+	}
+#endif
+}
+
+void UJoltSubsystem::DrawDebugCylinder(const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, bool bPersistent, float LifeTime) const
+{
+#ifdef JPH_DEBUG_RENDERER
+	if (UEJoltDebugRenderer* DebugRenderer = GetDebugRendererForDraw())
+	{
+		DebugRenderer->DrawDebugCylinder(Center, HalfHeight, Radius, Rotation, Color, bPersistent, LifeTime);
+	}
+#endif
+}
+
+void UJoltSubsystem::DrawDebugConvexHull(const TArray<FVector>& Points, const FColor& Color, bool bPersistent, float LifeTime) const
+{
+#ifdef JPH_DEBUG_RENDERER
+	if (UEJoltDebugRenderer* DebugRenderer = GetDebugRendererForDraw())
+	{
+		DebugRenderer->DrawDebugConvexHull(Points, Color, bPersistent, LifeTime);
+	}
+#endif
+}
+
+void UJoltSubsystem::DrawDebugMesh(const TArray<FVector>& Vertices, const TArray<uint32>& Indices, const FColor& Color, bool bPersistent, float LifeTime) const
+{
+#ifdef JPH_DEBUG_RENDERER
+	if (UEJoltDebugRenderer* DebugRenderer = GetDebugRendererForDraw())
+	{
+		DebugRenderer->DrawDebugMesh(Vertices, Indices, Color, bPersistent, LifeTime);
+	}
+#endif
+}
+
+void UJoltSubsystem::DrawDebugPlane(const FVector& Center, const FVector& Normal, float Size, const FColor& Color, bool bPersistent, float LifeTime) const
+{
+#ifdef JPH_DEBUG_RENDERER
+	if (UEJoltDebugRenderer* DebugRenderer = GetDebugRendererForDraw())
+	{
+		DebugRenderer->DrawDebugPlane(Center, Normal, Size, Color, bPersistent, LifeTime);
+	}
+#endif
+}
+
 void UJoltSubsystem::RayCastShapeNarrowPhase(const UShapeComponent* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& offset, NarrowPhaseQueryCallback& hitCallback)
 {
 	/* FIXME: Probable performance issues because of the bruteforce look up in the cache?
@@ -1141,7 +1218,7 @@ void UJoltSubsystem::RayCastShapeNarrowPhase(const UShapeComponent* shape, const
 	check(joltShape != nullptr);
 	check(MainPhysicsSystem != nullptr);
 
-	JPH::RShapeCast shape_cast{ joltShape, JoltHelpers::ToJoltVec3(shapeScale, false), JoltHelpers::ToJoltTransform(shapeCOM), JPH::Vec3(0, 0, 0) };
+	JPH::RShapeCast shape_cast{ joltShape, JoltHelpers::ToJoltVec3(shapeScale, false), JoltHelpers::ToJoltTransform(shapeCOM), JoltHelpers::ToJoltVec3(offset, false) };
 
 	JPH::ShapeCastSettings settings;
 	settings.mReturnDeepestPoint = false;
@@ -1170,23 +1247,16 @@ void UJoltSubsystem::RayCastShapeNarrowPhase(const UShapeComponent* shape, const
 		nullptr); // TODO: add support to return material
 }
 
-TArray<FCastShapeResult> UJoltSubsystem::CastShape(const UShapeComponent* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& offset)
+TArray<FCastShapeResult> UJoltSubsystem::CastShapeMultiInternal(const JPH::Shape* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& direction) const
 {
+	TArray<FCastShapeResult> shapeCastResults;
 
-	const JPH::Shape* joltShape = ProcessShapeElement(shape);
-	check(joltShape != nullptr);
-	check(MainPhysicsSystem != nullptr);
+	if (shape == nullptr || MainPhysicsSystem == nullptr)
+		return shapeCastResults;
+	
+	float maxDist = FMath::Square(direction.Size());
 
-	const USphereComponent* SphereComponent = Cast<const USphereComponent>(shape);
-
-#ifdef JPH_DEBUG_RENDERER
-	if (JoltSettings->bEnableDebugRenderer)
-	{
-		DrawDebugSphere(GetWorld(), shapeCOM.GetLocation(), SphereComponent->GetScaledSphereRadius(), 32, FColor::Magenta, false, 2.0f);
-	}
-#endif
-
-	JPH::RShapeCast shape_cast{ joltShape, JoltHelpers::ToJoltVec3(shapeScale, false), JoltHelpers::ToJoltTransform(shapeCOM), JPH::Vec3(0, 0, 0) };
+	JPH::RShapeCast shapeCast{ shape, JoltHelpers::ToJoltVec3(shapeScale, false), JoltHelpers::ToJoltTransform(shapeCOM), JoltHelpers::ToJoltVec3(direction, false) };
 
 	JPH::ShapeCastSettings settings;
 	settings.mReturnDeepestPoint = false;
@@ -1194,23 +1264,107 @@ TArray<FCastShapeResult> UJoltSubsystem::CastShape(const UShapeComponent* shape,
 	settings.mBackFaceModeConvex = JPH::EBackFaceMode::CollideWithBackFaces;
 
 	JPH::AllHitCollisionCollector<JPH::CastShapeCollector> collector;
-
-	MainPhysicsSystem->GetNarrowPhaseQuery().CastShape(
-		shape_cast,
-		settings,
-		JPH::RVec3::sZero(),
-		collector);
-
-	TArray<FCastShapeResult> shapeCastResult = TArray<FCastShapeResult>();
-	for (JPH::CollideShapeResult& val : collector.mHits)
 	{
-		shapeCastResult.Add({ val.mBodyID2.GetIndexAndSequenceNumber(), JoltHelpers::ToUESize(val.mContactPointOn2), JoltHelpers::ToUESize(val.mContactPointOn1) });
+		TRACE_CPUPROFILER_EVENT_SCOPE(Jolt_CastShapeMultiInternal);
+		MainPhysicsSystem->GetNarrowPhaseQuery().CastShape(shapeCast, settings, JPH::RVec3::sZero(), collector);
 	}
-	return shapeCastResult;
+
+	shapeCastResults.Reserve(collector.mHits.size());
+	for (auto& hit : collector.mHits)
+	{
+		JPH::BodyLockRead bodyLock(MainPhysicsSystem->GetBodyLockInterfaceNoLock(), hit.mBodyID2);
+		if (!bodyLock.Succeeded())
+			continue;
+
+		auto& body = bodyLock.GetBody();
+		if (body.IsSensor())
+			continue;
+		
+		float DistSq = FVector::DistSquared(JoltHelpers::ToUESize(hit.mContactPointOn2), shapeCOM.GetLocation());
+		if (DistSq > maxDist)
+			continue;
+
+		shapeCastResults.Add({
+			hit.mBodyID2.GetIndexAndSequenceNumber(),
+			JoltHelpers::ToUESize(hit.mContactPointOn2),
+			JoltHelpers::ToUESize(hit.mContactPointOn1)
+		});
+	}
+
+	shapeCastResults.Sort([&shapeCOM](const FCastShapeResult& A, const FCastShapeResult& B)
+	{
+		return FVector::DistSquared(shapeCOM.GetLocation(), A.ContactLocationFoundShape) < FVector::DistSquared(shapeCOM.GetLocation(), B.ContactLocationFoundShape);
+	});
+
+	return shapeCastResults;
 }
 
-void UJoltSubsystem::RayCastNarrowPhase(const FVector& start, const FVector& end, NarrowPhaseQueryCallback& hitCallback, const JPH::BodyFilter& bodyFilter) const
+bool UJoltSubsystem::CastShapeSingleInternal(const JPH::Shape* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& direction, FCastShapeResult& outHit) const
 {
+	outHit = FCastShapeResult{};
+	auto shapeCastResults = CastShapeMultiInternal(shape, shapeScale, shapeCOM, direction);
+	if (shapeCastResults.IsEmpty())
+	{
+		return false;
+	}
+	outHit = shapeCastResults[0];
+	return true;
+}
+
+TArray<FCastShapeResult> UJoltSubsystem::CastShape(const UShapeComponent* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& direction)
+{
+	auto joltShape = ProcessShapeElement(shape);
+	check(joltShape != nullptr);
+	return CastShapeMultiInternal(joltShape, shapeScale, shapeCOM, direction);
+}
+
+bool UJoltSubsystem::SphereTraceSingle(const FVector& start, const FVector& end, float radius, FCastShapeResult& outHit)
+{
+	auto sphereShape = GetSphereCollisionShape(radius);
+	return CastShapeSingleInternal(sphereShape, FVector::OneVector, FTransform(FQuat::Identity, start), end - start, outHit);
+}
+
+TArray<FCastShapeResult> UJoltSubsystem::SphereTraceMulti(const FVector& start, const FVector& end, float radius)
+{
+	auto sphereShape = GetSphereCollisionShape(radius);
+	return CastShapeMultiInternal(sphereShape, FVector::OneVector, FTransform(FQuat::Identity, start), end - start);
+}
+
+bool UJoltSubsystem::BoxTraceSingle(const FVector& start, const FVector& end, const FVector& halfExtent, const FRotator& orientation, FCastShapeResult& outHit)
+{
+	auto boxShape = GetBoxCollisionShape(halfExtent * 2.0f);
+	return CastShapeSingleInternal(boxShape, FVector::OneVector, FTransform(orientation, start), end - start, outHit);
+}
+
+TArray<FCastShapeResult> UJoltSubsystem::BoxTraceMulti(const FVector& start, const FVector& end, const FVector& halfExtent, const FRotator& orientation)
+{
+	auto boxShape = GetBoxCollisionShape(halfExtent * 2.0f);
+	return CastShapeMultiInternal(boxShape, FVector::OneVector, FTransform(orientation, start), end - start);
+}
+
+bool UJoltSubsystem::CapsuleTraceSingle(const FVector& start, const FVector& end, float radius, float halfHeight, const FRotator& orientation, FCastShapeResult& outHit)
+{
+	float cylinderHeight = FMath::Max(0.0f, (halfHeight - radius) * 2.0f);
+	auto capsuleShape = GetCapsuleCollisionShape(radius, cylinderHeight);
+	return CastShapeSingleInternal(capsuleShape, FVector::OneVector, FTransform(orientation, start), end - start, outHit);
+}
+
+TArray<FCastShapeResult> UJoltSubsystem::CapsuleTraceMulti(const FVector& start, const FVector& end, float radius, float halfHeight, const FRotator& orientation)
+{
+	float cylinderHeight = FMath::Max(0.0f, (halfHeight - radius) * 2.0f);
+	auto capsuleShape = GetCapsuleCollisionShape(radius, cylinderHeight);
+	return CastShapeMultiInternal(capsuleShape, FVector::OneVector, FTransform(orientation, start), end - start);
+}
+
+FRaycastResult UJoltSubsystem::RayCastNarrowPhase(const FVector& start, const FVector& end, const JPH::BodyFilter& bodyFilter) const
+{
+	FRaycastResult raycastResult;
+
+	if (MainPhysicsSystem == nullptr || BodyInterface == nullptr)
+	{
+		UE_LOG(JoltSubSystemLogs, Error, TEXT("RayCastNarrowPhase failed: physics system not initialized"));
+		return raycastResult;
+	}
 
 	JPH::RayCastSettings	 settings;
 	FVector					 dir = end - start;
@@ -1218,19 +1372,66 @@ void UJoltSubsystem::RayCastNarrowPhase(const FVector& start, const FVector& end
 	FirstRayCastHitCollector collector(*MainPhysicsSystem, ray);
 	MainPhysicsSystem->GetNarrowPhaseQuery().CastRay(ray, settings, collector, {}, {}, bodyFilter);
 
-	const UPhysicalMaterial* UEMat = nullptr;
 	if (collector.mHasHit)
 	{
-		const JPH::PhysicsMaterial* foundMat = BodyInterface->GetMaterial(collector.mBodyID, collector.mSubShapeID2);
-		UEMat = GetUEPhysicsMaterial(static_cast<const JoltPhysicsMaterial*>(foundMat));
+		raycastResult.HitLocation = JoltHelpers::ToUEPos(collector.mContactPosition);
+		raycastResult.HitNormal = JoltHelpers::ToUESize(collector.mContactNormal);
+		raycastResult.bHasHit = collector.mHasHit;
+		raycastResult.HitBodyID = collector.mBodyID.GetIndexAndSequenceNumber();
 	}
 
-	hitCallback(
-		JoltHelpers::ToUEPos(collector.mContactPosition),
-		JoltHelpers::ToUESize(collector.mContactNormal),
-		collector.mHasHit,
-		collector.mBodyID.GetIndexAndSequenceNumber(),
-		UEMat);
+	return raycastResult;
+}
+
+TArray<FRaycastResult> UJoltSubsystem::RayCastBroadPhase(const FVector& start, const FVector& end, const JPH::BodyFilter& bodyFilter) const
+{
+	TArray<FRaycastResult> raycastResults;
+
+	if (MainPhysicsSystem == nullptr || BodyInterface == nullptr)
+	{
+		UE_LOG(JoltSubSystemLogs, Error, TEXT("RayCastBroadPhase failed: physics system not initialized"));
+		return raycastResults;
+	}
+
+	JPH::RayCastSettings settings;
+	FVector dir = end - start;
+	JPH::RRayCast ray{ JoltHelpers::ToJoltPos(start), JoltHelpers::ToJoltVec3(dir) };
+	JPH::AllHitCollisionCollector<JPH::CastRayCollector> collector;
+	MainPhysicsSystem->GetNarrowPhaseQuery().CastRay(ray, settings, collector, {}, {}, bodyFilter);
+
+	float maxDist = dir.Size();
+	
+	raycastResults.Reserve(static_cast<int32>(collector.mHits.size()));
+	for (auto& hit : collector.mHits)
+	{
+		JPH::BodyLockRead bodyLock(MainPhysicsSystem->GetBodyLockInterfaceNoLock(), hit.mBodyID);
+		if (!bodyLock.Succeeded())
+		{
+			continue;
+		}
+
+		auto& body = bodyLock.GetBody();
+		if (body.IsSensor())
+		{
+			continue;
+		}
+		
+		if (hit.mFraction > 1.f)
+			continue;
+
+		auto& raycastResult = raycastResults.AddDefaulted_GetRef();
+		raycastResult.bHasHit = true;
+		raycastResult.HitBodyID = hit.mBodyID.GetIndexAndSequenceNumber();
+		raycastResult.HitLocation = JoltHelpers::ToUEPos(ray.GetPointOnRay(hit.mFraction));
+		raycastResult.HitNormal = JoltHelpers::ToUESize(body.GetWorldSpaceSurfaceNormal(hit.mSubShapeID2, ray.GetPointOnRay(hit.mFraction)));
+	}
+
+	raycastResults.Sort([&start](const FRaycastResult& A, const FRaycastResult& B)
+	{
+		return FVector::DistSquared(start, A.HitLocation) < FVector::DistSquared(start, B.HitLocation);
+	});
+
+	return raycastResults;
 }
 
 FTransform UJoltSubsystem::GetBodyCOM(int32 inBodyID)
@@ -1541,8 +1742,19 @@ void UJoltSubsystem::ExtractSplineMeshGeometry(const UBodySetup* splineMeshBodyS
 #endif
 
 #ifdef JPH_DEBUG_RENDERER
+UEJoltDebugRenderer* UJoltSubsystem::GetDebugRendererForDraw() const
+{
+	if (JoltSettings == nullptr || !JoltSettings->bEnableDebugRenderer)
+	{
+		return nullptr;
+	}
+
+	return JoltDebugRendererImpl;
+}
+
 void UJoltSubsystem::DrawDebugLines() const
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::DrawDebugLines);
 	if (!JoltSettings->bEnableDebugRenderer)
 	{
 		return;

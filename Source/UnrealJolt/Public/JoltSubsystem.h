@@ -29,8 +29,22 @@ class UBodySetup;
 struct FKAggregateGeom;
 struct FKConvexElem;
 
-UDELEGATE(BlueprintCallable)
-DECLARE_DYNAMIC_DELEGATE_FourParams(FNarrowPhaseQueryDelegate, const FVector&, hitLocation, const FVector&, hitNormal, bool, bHasHit, const int32, hitBodyID);
+USTRUCT(BlueprintType)
+struct FRaycastResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Jolt Physics")
+	FVector HitLocation = FVector::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Jolt Physics")
+	FVector HitNormal = FVector::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Jolt Physics")
+	bool bHasHit = false;
+
+	uint32 HitBodyID;
+};
 
 struct FFrameHistory
 {
@@ -131,7 +145,13 @@ public:
 	 * This will first perform a broadphase, then a narrow phase query
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
-	void RayCastNarrowPhase(const FVector& start, const FVector& end, const FNarrowPhaseQueryDelegate& hitCallback);
+	FRaycastResult RayCastNarrowPhase(const FVector& start, const FVector& end);
+
+	/*
+	 * Sweeps a ray and returns all body hits sorted from nearest to furthest.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	TArray<FRaycastResult> RayCastBroadPhase(const FVector& start, const FVector& end);
 
 	/*
 	 * Used to check a collision by placing the shape at a static location
@@ -143,7 +163,26 @@ public:
 	 * Sweep a shape to detect collision
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
-	TArray<FCastShapeResult> CastShape(const UShapeComponent* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& offset);
+	TArray<FCastShapeResult> CastShape(const UShapeComponent* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& direction);
+
+	// UE-style primitive sweeps that don't require a shape component.
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	bool SphereTraceSingle(const FVector& start, const FVector& end, float radius, FCastShapeResult& outHit);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	TArray<FCastShapeResult> SphereTraceMulti(const FVector& start, const FVector& end, float radius);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	bool BoxTraceSingle(const FVector& start, const FVector& end, const FVector& halfExtent, const FRotator& orientation, FCastShapeResult& outHit);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	TArray<FCastShapeResult> BoxTraceMulti(const FVector& start, const FVector& end, const FVector& halfExtent, const FRotator& orientation);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	bool CapsuleTraceSingle(const FVector& start, const FVector& end, float radius, float halfHeight, const FRotator& orientation, FCastShapeResult& outHit);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	TArray<FCastShapeResult> CapsuleTraceMulti(const FVector& start, const FVector& end, float radius, float halfHeight, const FRotator& orientation);
 
 	/*
 	 * Fetch the centre of mass of the body
@@ -260,8 +299,11 @@ public:
 
 	void JoltGetPhysicsTransform(const JPH::BodyID& bodyID, FTransform& transform) const;
 
-	// This will first perform a broadphase, and then a narrow phase query
-	void RayCastNarrowPhase(const FVector& start, const FVector& end, NarrowPhaseQueryCallback& hitCallback, const JPH::BodyFilter& bodyFilter = {}) const;
+	// This will first perform a broadphase, and then a narrow phase query.
+	FRaycastResult RayCastNarrowPhase(const FVector& start, const FVector& end, const JPH::BodyFilter& bodyFilter = {}) const;
+
+	// Same as RayCastNarrowPhase but returns all hits along the ray, sorted by distance.
+	TArray<FRaycastResult> RayCastBroadPhase(const FVector& start, const FVector& end, const JPH::BodyFilter& bodyFilter = {}) const;
 
 	void RayCastShapeNarrowPhase(const UShapeComponent* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& offset, NarrowPhaseQueryCallback& hitCallback);
 
@@ -285,6 +327,16 @@ public:
 	 * set bWithCallbacks to false and disable all the binded callbacks
 	 */
 	void StepPhysics(bool bWithCallbacks = true);
+
+	// Ad hoc debug draw wrappers routed through the Jolt debug renderer when available.
+	void DrawDebugSphere(const FVector& Center, float Radius, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
+	void DrawDebugBox(const FVector& Center, const FVector& Extent, const FQuat& Rotation, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
+	void DrawDebugTriangle(const FVector& V1, const FVector& V2, const FVector& V3, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
+	void DrawDebugCapsule(const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
+	void DrawDebugCylinder(const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
+	void DrawDebugConvexHull(const TArray<FVector>& Points, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
+	void DrawDebugMesh(const TArray<FVector>& Vertices, const TArray<uint32>& Indices, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
+	void DrawDebugPlane(const FVector& Center, const FVector& Normal, float Size, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
 
 	// --- Public external-owner API ---
 	// Stable contract for plugins that drive their own physics state on top
@@ -394,6 +446,8 @@ private:
 
 	JPH::BodyManager::DrawSettings* DrawSettings = nullptr;
 
+	UEJoltDebugRenderer* GetDebugRendererForDraw() const;
+
 	void DrawDebugLines() const;
 #endif
 
@@ -429,6 +483,10 @@ private:
 	void ExtractComplexPhysicsGeometry(const FTransform& xformSoFar, const UBodySetup* bodySetup, const FString& meshName, TArray<FExtractedShape>& OutShapes);
 
 	const JPH::Shape* ProcessShapeElement(const UShapeComponent* shapeComponent);
+
+	TArray<FCastShapeResult> CastShapeMultiInternal(const JPH::Shape* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& direction) const;
+
+	bool CastShapeSingleInternal(const JPH::Shape* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& direction, FCastShapeResult& outHit) const;
 
 	/*
 	 * Fetch all the actors in UE world and add them to jolt simulation

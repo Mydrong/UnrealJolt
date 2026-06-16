@@ -75,4 +75,14 @@ public:
 	virtual void DrawLine(JPH::RVec3Arg inFrom, JPH::RVec3Arg inTo, JPH::ColorArg inColor) override;
 	virtual void DrawTriangle(JPH::RVec3Arg inV1, JPH::RVec3Arg inV2, JPH::RVec3Arg inV3, JPH::ColorArg inColor, ECastShadow inCastShadow) override;
 	virtual void DrawText3D(JPH::RVec3Arg inPosition, const JPH::string_view& inString, JPH::ColorArg inColor, float inHeight) override;
+
+	// Shape-specific debug drawing functions - can be called ad hoc from outside
+	void DrawDebugSphere(const FVector& Center, float Radius, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f);
+	void DrawDebugBox(const FVector& Center, const FVector& Extent, const FQuat& Rotation, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f);
+	void DrawDebugTriangle(const FVector& V1, const FVector& V2, const FVector& V3, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f);
+	void DrawDebugCapsule(const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f);
+	void DrawDebugCylinder(const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f);
+	void DrawDebugConvexHull(const TArray<FVector>& Points, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f);
+	void DrawDebugMesh(const TArray<FVector>& Vertices, const TArray<uint32>& Indices, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f);
+	void DrawDebugPlane(const FVector& Center, const FVector& Normal, float Size, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f);
 };

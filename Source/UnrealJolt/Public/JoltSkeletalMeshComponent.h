@@ -111,7 +111,7 @@ public:
 	 */
 	const JPH::Shape* ExtractJoltShape(UJoltSubsystem* jolt) const;
 
-	void RayCastNarrowPhaseIgnoreSelf(const FVector& start, const FVector& end, NarrowPhaseQueryCallback& hitCallback) const;
+	FRaycastResult RayCastNarrowPhaseIgnoreSelf(const FVector& start, const FVector& end) const;
 
 	/* Will simply set the location of the visual mesh only
 	 * Has no interaction with the physics system

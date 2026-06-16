@@ -186,12 +186,12 @@ public class UnrealJoltLibrary : ModuleRules
 		string ThirdPartyJoltPath= Path.Combine(ModuleDirectory, "JoltPhysics");
 		Type = ModuleType.External;
 		string buildType;
-		if (Target.Configuration == UnrealTargetConfiguration.Debug ||
-				Target.Configuration == UnrealTargetConfiguration.Debug)
+		if (Target.Configuration == UnrealTargetConfiguration.Debug)
 		{
 			buildType = "Debug";
 		}
-		else if (Target.Configuration == UnrealTargetConfiguration.Development)
+		else if (Target.Configuration == UnrealTargetConfiguration.Development ||
+				 Target.Configuration == UnrealTargetConfiguration.DebugGame)
 		{
 			buildType = "Release";
 		}
@@ -392,6 +392,7 @@ public class MBuildUtils {
 			case UnrealTargetConfiguration.Debug:
 				configFolder = "lib-debug";
 				break;
+			case UnrealTargetConfiguration.DebugGame:
 			case UnrealTargetConfiguration.Development:
 				configFolder = "lib-development";
 				break;
