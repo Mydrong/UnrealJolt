@@ -180,7 +180,7 @@ FRaycastResult UJoltSkeletalMeshComponent::RayCastNarrowPhaseIgnoreSelf(const FV
 	{
 		return FRaycastResult{};
 	}
-	return JoltSubSystem->RayCastNarrowPhase(start, end, *BodyFilter);
+	return JoltSubSystem->RayCastNarrowPhase(start, end, {}, {}, *BodyFilter);
 }
 
 void UJoltSkeletalMeshComponent::JoltSetLinearAndAngularVelocity(const FVector& velocity, const FVector& angularVelocity) const

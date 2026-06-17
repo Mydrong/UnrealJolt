@@ -1059,7 +1059,7 @@ const JPH::BodyID* UJoltSubsystem::AddBodyToSimulation(const JPH::BodyID* bodyID
 	// Refuse to create a body with an unresolved layer — Jolt would otherwise stuff cObjectLayerInvalid
 	// into the broadphase and trip an assert deeper in the simulation. The Resolve* helpers have already
 	// logged which name failed to resolve.
-	if (shapeSettings.mObjectLayer == JPH::cObjectLayerInvalid)
+	if (!ensure(shapeSettings.mObjectLayer != JPH::cObjectLayerInvalid))
 	{
 		UE_LOG(JoltSubSystemLogs, Error, TEXT("Refusing to create %s body with ID %d: object layer is invalid"),
 			*JoltHelpers::EMotionTypeToString(shapeSettings.mMotionType), bodyID->GetIndexAndSequenceNumber());
@@ -1067,7 +1067,7 @@ const JPH::BodyID* UJoltSubsystem::AddBodyToSimulation(const JPH::BodyID* bodyID
 	}
 
 	JPH::Body* createdBody = BodyInterface->CreateBodyWithID(*bodyID, shapeSettings);
-	if (createdBody == nullptr)
+	if (!ensure(createdBody != nullptr))
 	{
 		UE_LOG(JoltSubSystemLogs, Error, TEXT("failed to create %s body with ID: %d"), *JoltHelpers::EMotionTypeToString(shapeSettings.mMotionType), bodyID->GetIndexAndSequenceNumber());
 		return nullptr;
@@ -1356,7 +1356,12 @@ TArray<FCastShapeResult> UJoltSubsystem::CapsuleTraceMulti(const FVector& start,
 	return CastShapeMultiInternal(capsuleShape, FVector::OneVector, FTransform(orientation, start), end - start);
 }
 
-FRaycastResult UJoltSubsystem::RayCastNarrowPhase(const FVector& start, const FVector& end, const JPH::BodyFilter& bodyFilter) const
+FRaycastResult UJoltSubsystem::RayCastNarrowPhase(
+	const FVector&          start, const FVector& end,
+	const TSet<FName>&      broadPhaseLayers,
+	const TSet<FName>&      objectLayers,
+	const JPH::BodyFilter&  inBodyFilter,
+	const JPH::ShapeFilter& inShapeFilter) const
 {
 	FRaycastResult raycastResult;
 
@@ -1370,7 +1375,10 @@ FRaycastResult UJoltSubsystem::RayCastNarrowPhase(const FVector& start, const FV
 	FVector					 dir = end - start;
 	JPH::RRayCast			 ray{ JoltHelpers::ToJoltPos(start), JoltHelpers::ToJoltVec3(dir) };
 	FirstRayCastHitCollector collector(*MainPhysicsSystem, ray);
-	MainPhysicsSystem->GetNarrowPhaseQuery().CastRay(ray, settings, collector, {}, {}, bodyFilter);
+	MainPhysicsSystem->GetNarrowPhaseQuery().CastRay(
+	ray, settings, collector,
+	BroadPhaseLayersFilter_UE(broadPhaseLayers, LayerTable),
+	ObjectLayersFilter_UE(objectLayers, LayerTable), inBodyFilter, inShapeFilter);
 
 	if (collector.mHasHit)
 	{
@@ -1383,7 +1391,12 @@ FRaycastResult UJoltSubsystem::RayCastNarrowPhase(const FVector& start, const FV
 	return raycastResult;
 }
 
-TArray<FRaycastResult> UJoltSubsystem::RayCastBroadPhase(const FVector& start, const FVector& end, const JPH::BodyFilter& bodyFilter) const
+TArray<FRaycastResult> UJoltSubsystem::RayCastBroadPhase(
+	const FVector&          start, const FVector& end,
+	const TSet<FName>&      broadPhaseLayers,
+	const TSet<FName>&      objectLayers,
+	const JPH::BodyFilter&  inBodyFilter,
+	const JPH::ShapeFilter& inShapeFilter) const
 {
 	TArray<FRaycastResult> raycastResults;
 
@@ -1397,9 +1410,10 @@ TArray<FRaycastResult> UJoltSubsystem::RayCastBroadPhase(const FVector& start, c
 	FVector dir = end - start;
 	JPH::RRayCast ray{ JoltHelpers::ToJoltPos(start), JoltHelpers::ToJoltVec3(dir) };
 	JPH::AllHitCollisionCollector<JPH::CastRayCollector> collector;
-	MainPhysicsSystem->GetNarrowPhaseQuery().CastRay(ray, settings, collector, {}, {}, bodyFilter);
-
-	float maxDist = dir.Size();
+	MainPhysicsSystem->GetNarrowPhaseQuery().CastRay(
+		ray, settings, collector, 
+		BroadPhaseLayersFilter_UE(broadPhaseLayers, LayerTable),
+		ObjectLayersFilter_UE(objectLayers, LayerTable), inBodyFilter, inShapeFilter);
 	
 	raycastResults.Reserve(static_cast<int32>(collector.mHits.size()));
 	for (auto& hit : collector.mHits)

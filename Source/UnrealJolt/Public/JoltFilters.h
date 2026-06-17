@@ -102,3 +102,41 @@ public:
 private:
 	JPH::Array<JPH::BodyID> AllowedBodiesList;
 };
+
+class ObjectLayersFilter_UE final : public JPH::ObjectLayerFilter
+{
+public:
+	explicit ObjectLayersFilter_UE(
+		const TSet<FName>& layerNames, const FJoltLayerTable& layerTable) :
+		layerNames(layerNames), layerTable(layerTable)
+	{
+	}
+
+	virtual bool ShouldCollide(JPH::ObjectLayer inLayer) const override
+	{
+		return layerNames.Contains(layerTable.ObjectLayerNames[static_cast<int32>(inLayer)]);
+	}
+
+private:
+	const TSet<FName>& layerNames;
+	const FJoltLayerTable& layerTable;
+};
+
+class BroadPhaseLayersFilter_UE final : public JPH::BroadPhaseLayerFilter
+{
+public:
+	explicit BroadPhaseLayersFilter_UE(
+		const TSet<FName>& layerNames, const FJoltLayerTable& layerTable) :
+		layerNames(layerNames), layerTable(layerTable)
+	{
+	}
+
+	virtual bool ShouldCollide(JPH::BroadPhaseLayer inLayer) const override
+	{
+		return layerNames.Contains(layerTable.BroadphaseLayerNames[static_cast<uint8>(inLayer)]);
+	}
+
+private:
+	const TSet<FName>& layerNames;
+	const FJoltLayerTable& layerTable;
+};

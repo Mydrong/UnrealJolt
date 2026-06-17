@@ -300,10 +300,20 @@ public:
 	void JoltGetPhysicsTransform(const JPH::BodyID& bodyID, FTransform& transform) const;
 
 	// This will first perform a broadphase, and then a narrow phase query.
-	FRaycastResult RayCastNarrowPhase(const FVector& start, const FVector& end, const JPH::BodyFilter& bodyFilter = {}) const;
+	FRaycastResult RayCastNarrowPhase(
+		const FVector&          start, const FVector& end,
+		const TSet<FName>&      broadPhaseLayers = {},
+		const TSet<FName>&      objectLayers = {},
+		const JPH::BodyFilter&  inBodyFilter = {},
+		const JPH::ShapeFilter& inShapeFilter = {}) const;
 
 	// Same as RayCastNarrowPhase but returns all hits along the ray, sorted by distance.
-	TArray<FRaycastResult> RayCastBroadPhase(const FVector& start, const FVector& end, const JPH::BodyFilter& bodyFilter = {}) const;
+	TArray<FRaycastResult> RayCastBroadPhase(
+		const FVector&          start, const FVector& end,
+		const TSet<FName>&      broadPhaseLayers = {},
+		const TSet<FName>&      objectLayers = {},
+		const JPH::BodyFilter&  inBodyFilter = {},
+		const JPH::ShapeFilter& inShapeFilter = {}) const;
 
 	void RayCastShapeNarrowPhase(const UShapeComponent* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& offset, NarrowPhaseQueryCallback& hitCallback);
 
