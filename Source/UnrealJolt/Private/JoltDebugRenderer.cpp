@@ -65,6 +65,11 @@ bool UEJoltBodyDrawFilter::ShouldDrawByType(const JPH::Body& inBody) const
 	{
 		return bDrawHeightField;
 	}
+	
+	if (inBody.GetShape()->GetType() == JPH::EShapeType::Mesh)
+	{
+		return bDrawMesh;
+	}
 
 	switch (inBody.GetMotionType())
 	{
@@ -246,6 +251,7 @@ void UEJoltDebugRenderer::DrawConfiguredBodies(JPH::PhysicsSystem* PhysicsSystem
 		DrawFilter.bDrawDynamic = false;
 		DrawFilter.bDrawKinematic = false;
 		DrawFilter.bDrawHeightField = JoltSettings->bDebugDrawHeightFields;
+		DrawFilter.bDrawMesh = JoltSettings->bDebugDrawMeshBodies;
 
 		PhysicsSystem->DrawBodies(Settings, this, &DrawFilter);
 	}
@@ -257,6 +263,7 @@ void UEJoltDebugRenderer::DrawConfiguredBodies(JPH::PhysicsSystem* PhysicsSystem
 		DrawFilter.bDrawDynamic = JoltSettings->bDebugDrawDynamicBodies;
 		DrawFilter.bDrawKinematic = JoltSettings->bDebugDrawKinematicBodies;
 		DrawFilter.bDrawHeightField = false;
+		DrawFilter.bDrawMesh = false;
 
 		PhysicsSystem->DrawBodies(Settings, this, &DrawFilter);
 	}

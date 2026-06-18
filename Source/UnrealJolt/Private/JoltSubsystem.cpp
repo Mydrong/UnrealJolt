@@ -240,6 +240,7 @@ void UJoltSubsystem::Tick(float deltaSeconds)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE_STR("JoltSubsystem_Tick");
 	Super::Tick(deltaSeconds);
+	bHasDrawnDebugLinesThisFrame = false;
 
 	if (JoltWorker == nullptr)
 	{
@@ -275,7 +276,11 @@ void UJoltSubsystem::StepPhysics(bool bWithCallbacks)
 
 	RecordFrames();
 #ifdef JPH_DEBUG_RENDERER
-	DrawDebugLines();
+	if (!bHasDrawnDebugLinesThisFrame)
+	{
+		DrawDebugLines();
+		bHasDrawnDebugLinesThisFrame = true;
+	}
 #endif
 }
 
@@ -489,6 +494,29 @@ int64 UJoltSubsystem::AddStaticShapes(const FKAggregateGeom& AggregateGeom, cons
 	return ID;
 }
 
+int64 UJoltSubsystem::AddMeshShape(
+	const TArray<FVector>& vertices, const TArray<int32>& indices, const FTransform& worldTransform, 
+	bool bDynamic, float friction, float restitution, float Mass, FName Layer)
+{
+	int64 ID = 0;
+	TArray<FExtractedShape> Shapes;
+	ExtractMeshShape(vertices, indices, worldTransform, Shapes);
+	for (auto& Extracted : Shapes)
+	{
+		if (bDynamic)
+		{
+			if (auto bodyID = AddDynamicBodyCollision(Extracted.Shape, Extracted.WorldTransform, friction, restitution, Mass, Layer))
+				ID = bodyID->GetIndexAndSequenceNumber();
+		} 
+		else
+		{
+			if (auto bodyID = AddStaticBodyCollision(Extracted.Shape, Extracted.WorldTransform, friction, restitution, Layer))
+				ID = bodyID->GetIndexAndSequenceNumber();
+		}
+	}
+	return ID;
+}
+
 TArray<FExtractedShape> UJoltSubsystem::ExtractPhysicsGeometryFromActor(const AActor* actor)
 {
 	TArray<FExtractedShape> OutShapes;
@@ -615,7 +643,64 @@ void UJoltSubsystem::ExtractComplexPhysicsGeometry(const FTransform& xformSoFar,
 		UE_LOG(JoltSubSystemLogs, Error, TEXT("Failed to create mesh for '%s'. Error: %s"), *meshName, *FString(res.GetError().c_str()));
 		return;
 	}
-	OutShapes.Add({res.Get(), xformSoFar});
+	OutShapes.Emplace(res.Get(), xformSoFar);
+}
+
+void UJoltSubsystem::ExtractMeshShape(const TArray<FVector>& ueVertices, const TArray<int32>& ueIndices, const FTransform& xformSoFar, TArray<FExtractedShape>& OutShapes)
+{
+	const FVector scale = xformSoFar.GetScale3D();
+
+	JPH::VertexList			 joltVertices;
+	JPH::IndexedTriangleList triangles;
+	const int				 MaterialIDX = 0;
+
+	const int32						  NumVerts = ueVertices.Num();
+	const int32						  NumTris = ueIndices.Num() / 3;
+
+	joltVertices.reserve(NumVerts);
+	triangles.reserve(NumTris);
+
+	for (int32 i = 0; i < NumVerts; ++i)
+	{
+		const FVector& Vert = ueVertices[i];
+		joltVertices.push_back(JoltHelpers::ToJoltFloat3(
+			FVector3f(Vert.X * scale.X, Vert.Y * scale.Y, Vert.Z * scale.Z)));
+	}
+
+	auto pushTri = [&](uint32 a, uint32 b, uint32 c) {
+		if (a < static_cast<uint32>(NumVerts) && b < static_cast<uint32>(NumVerts) && c < static_cast<uint32>(NumVerts))
+		{
+			triangles.push_back(JPH::IndexedTriangle(a, b, c, MaterialIDX));  // Swap b and c so the triangles face outward
+		}
+		else
+		{
+			UE_LOG(JoltSubSystemLogs, Error, TEXT("Invalid triangle indices in cooked tri-mesh'!"));
+		}
+	};
+
+	for (int32 i = 0; i < ueIndices.Num(); i += 3)
+	{
+		pushTri(ueIndices[i], ueIndices[i + 1], ueIndices[i + 2]);
+	}
+
+	if (joltVertices.empty() || triangles.empty())
+	{
+		UE_LOG(JoltSubSystemLogs, Error, TEXT("Skipping complex collision: empty cooked tri-mesh. Verts=%llu Tris=%llu"),
+			static_cast<uint64>(joltVertices.size()),
+			static_cast<uint64>(triangles.size()));
+		return;
+	}
+
+	JPH::PhysicsMaterial physicalMaterial;
+	JPH::MeshShapeSettings	meshSettings(joltVertices, triangles);
+	JPH::Shape::ShapeResult res = meshSettings.Create();
+
+	if (!res.IsValid())
+	{
+		UE_LOG(JoltSubSystemLogs, Error, TEXT("Failed to create mesh. Error: %s"), *FString(res.GetError().c_str()));
+		return;
+	}
+	OutShapes.Emplace(res.Get(), xformSoFar);
 }
 
 FRaycastResult UJoltSubsystem::RayCastNarrowPhase(const FVector& start, const FVector& end)
@@ -714,7 +799,7 @@ void UJoltSubsystem::ExtractAggGeomSpheres(const FTransform& xformSoFar, const F
 		FTransform ShapeXform(FRotator::ZeroRotator, ueSphere.Center);
 		// Shape transform adds to any relative transform already here
 		FTransform XForm = ShapeXform * xformSoFar;
-		OutShapes.Add({joltShape, XForm});
+		OutShapes.Emplace(joltShape, XForm);
 	}
 }
 
@@ -740,7 +825,7 @@ void UJoltSubsystem::ExtractAggGeomCapsules(const FTransform& xformSoFar, const 
 		FTransform ShapeXform(CapsuleTransform.GetRotation(), CapsuleTransform.GetLocation());
 		// Shape transform adds to any relative transform already here
 		FTransform XForm = ShapeXform * xformSoFar;
-		OutShapes.Add({joltShape, XForm});
+		OutShapes.Emplace(joltShape, XForm);
 	}
 }
 
@@ -764,7 +849,7 @@ void UJoltSubsystem::ExtractAggGeomConvex(const FTransform& xformSoFar, const FK
 			continue;
 		}
 
-		OutShapes.Add({joltShape, xformSoFar});
+		OutShapes.Emplace(joltShape, xformSoFar);
 	}
 }
 
@@ -1375,10 +1460,13 @@ FRaycastResult UJoltSubsystem::RayCastNarrowPhase(
 	FVector					 dir = end - start;
 	JPH::RRayCast			 ray{ JoltHelpers::ToJoltPos(start), JoltHelpers::ToJoltVec3(dir) };
 	FirstRayCastHitCollector collector(*MainPhysicsSystem, ray);
-	MainPhysicsSystem->GetNarrowPhaseQuery().CastRay(
-	ray, settings, collector,
-	BroadPhaseLayersFilter_UE(broadPhaseLayers, LayerTable),
-	ObjectLayersFilter_UE(objectLayers, LayerTable), inBodyFilter, inShapeFilter);
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(Jolt_RayCastNarrowPhase);
+		MainPhysicsSystem->GetNarrowPhaseQuery().CastRay(
+			ray, settings, collector,
+			BroadPhaseLayersFilter_UE(broadPhaseLayers, LayerTable),
+			ObjectLayersFilter_UE(objectLayers, LayerTable), inBodyFilter, inShapeFilter);
+	}
 
 	if (collector.mHasHit)
 	{

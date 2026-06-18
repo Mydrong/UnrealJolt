@@ -168,6 +168,9 @@ public:
 
 	UPROPERTY(Config, EditAnywhere, Category = "Debug Rendering", meta = (EditCondition = "bEnableDebugRenderer"))
 	bool bDebugDrawHeightFields;
+	
+	UPROPERTY(Config, EditAnywhere, Category = "Debug Rendering", meta = (EditCondition = "bEnableDebugRenderer"))
+	bool bDebugDrawMeshBodies;
 
 	// Bodies farther than this distance (in cm) from the active camera are skipped.
 	// Set to 0 or lower to disable distance culling.
@@ -209,7 +212,7 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Layers")
 	FName DefaultStaticLayer;
 
-#if WITH_EDITOR
+	#if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 };

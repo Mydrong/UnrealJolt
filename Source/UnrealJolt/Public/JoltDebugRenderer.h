@@ -29,6 +29,7 @@ public:
 	bool bDrawDynamic = true;
 	bool bDrawKinematic = true;
 	bool bDrawHeightField = true;
+	bool bDrawMesh = true;
 	FVector CameraPosition = FVector::ZeroVector;
 	float MaxDrawDistanceSquared = 0.0f;
 	int32 MaxBodiesToDraw = 0;

@@ -115,6 +115,11 @@ public:
 
 	int64 AddStaticShapes(const FKAggregateGeom& AggregateGeom, const FTransform& worldTransform, const float& friction, const float& restitution, FName Layer = NAME_None);
 	
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", meta = (AdvancedDisplay = "Layer"))
+	int64 AddMeshShape(
+		const TArray<FVector>& vertices, const TArray<int32>& indices, const FTransform& worldTransform, 
+		bool bDynamic, float friction, float restitution, float Mass, FName Layer = NAME_None);
+	
 	/*
 	 * Layer lookup. Returns INDEX_NONE if the name isn't a configured object layer.
 	 * Use when gameplay code needs the raw id for a custom body creation path.
@@ -491,6 +496,10 @@ private:
 	void ExtractAggGeomConvex(const FTransform& xformSoFar, const FKAggregateGeom& aggregateGeom, const FVector& scale, const JoltPhysicsMaterial* physicsMaterial, JPH::CompoundShapeSettings* compoundShapeSettings, TArray<FExtractedShape>& OutShapes);
 
 	void ExtractComplexPhysicsGeometry(const FTransform& xformSoFar, const UBodySetup* bodySetup, const FString& meshName, TArray<FExtractedShape>& OutShapes);
+	
+	void ExtractMeshShape(
+		const TArray<FVector>& ueVertices, const TArray<int32>& ueIndices,
+		const FTransform& xformSoFar, TArray<FExtractedShape>& OutShapes);
 
 	const JPH::Shape* ProcessShapeElement(const UShapeComponent* shapeComponent);
 
@@ -542,6 +551,7 @@ private:
 	TArray<TDelegate<void(float)>> PostInterpolationCallbacks;
 
 	bool bIsReady = false;
+	bool bHasDrawnDebugLinesThisFrame = false;
 
 public:
 	FOnJoltReady OnReady;

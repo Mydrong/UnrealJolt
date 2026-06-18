@@ -114,7 +114,7 @@ public:
 
 	virtual bool ShouldCollide(JPH::ObjectLayer inLayer) const override
 	{
-		return layerNames.Contains(layerTable.ObjectLayerNames[static_cast<int32>(inLayer)]);
+		return layerNames.IsEmpty() || layerNames.Contains(layerTable.ObjectLayerNames[static_cast<int32>(inLayer)]);
 	}
 
 private:
@@ -133,7 +133,7 @@ public:
 
 	virtual bool ShouldCollide(JPH::BroadPhaseLayer inLayer) const override
 	{
-		return layerNames.Contains(layerTable.BroadphaseLayerNames[static_cast<uint8>(inLayer)]);
+		return layerNames.IsEmpty() || layerNames.Contains(layerTable.BroadphaseLayerNames[static_cast<uint8>(inLayer)]);
 	}
 
 private:
