@@ -57,6 +57,11 @@ public:
 		return FVector(V.GetX(), V.GetZ(), V.GetY()) * JOLT_TO_WORLD_SCALE_D + WorldOrigin;
 	}
 
+	inline static FVector ToUEPos(const JPH::Vec3& V, const FVector& WorldOrigin = FVector(0))
+	{
+		return FVector(V.GetX(), V.GetZ(), V.GetY()) * JOLT_TO_WORLD_SCALE_D + WorldOrigin;
+	}
+
 	inline static JPH::RVec3 ToJoltPos(const FVector& V, const FVector& WorldOrigin = FVector(0))
 	{
 		return JPH::RVec3(V.X - WorldOrigin.X, V.Z - WorldOrigin.Z, V.Y - WorldOrigin.Y) * WORLD_TO_JOLT_SCALE_D;

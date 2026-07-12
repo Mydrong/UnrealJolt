@@ -14,7 +14,7 @@ class UJoltSettings;
  */
 struct UNREALJOLT_API FJoltLayerTable
 {
-	TArray<FName> ObjectLayerNames;		// index -> ObjectLayer id
+	TArray<FName> ObjectLayerNames;     // index -> ObjectLayer id
 	TArray<FName> BroadphaseLayerNames; // index -> BroadPhaseLayer id
 
 	// ANSI cache used by BPLayerInterfaceImpl::GetBroadPhaseLayerName — Jolt's profiler hook
@@ -43,7 +43,8 @@ struct UNREALJOLT_API FJoltLayerTable
 		{
 			return false;
 		}
-		return ObjectCollisionMask[a * n + b] != 0;
+		bool bCollides = ObjectCollisionMask[a * n + b] != 0;
+		return bCollides;
 	}
 
 	bool ObjectVsBroadphaseCollides(int32 objectLayer, int32 broadphase) const
@@ -54,7 +55,8 @@ struct UNREALJOLT_API FJoltLayerTable
 		{
 			return false;
 		}
-		return ObjectVsBroadphaseMask[objectLayer * nBp + broadphase] != 0;
+		bool bCollides = ObjectVsBroadphaseMask[objectLayer * nBp + broadphase] != 0;
+		return bCollides;
 	}
 
 	// Builds the table from the given settings. Safe to call even if settings contain stale data:

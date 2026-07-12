@@ -9,9 +9,7 @@ class ObjectLayerPairFilterImpl final : public JPH::ObjectLayerPairFilter
 {
 public:
 	explicit ObjectLayerPairFilterImpl(const FJoltLayerTable& InTable)
-		: Table(InTable)
-	{
-	}
+		: Table(InTable) {}
 
 	virtual bool ShouldCollide(JPH::ObjectLayer inObject1, JPH::ObjectLayer inObject2) const override
 	{
@@ -28,9 +26,7 @@ class BPLayerInterfaceImpl final : public JPH::BroadPhaseLayerInterface
 {
 public:
 	explicit BPLayerInterfaceImpl(const FJoltLayerTable& InTable)
-		: Table(InTable)
-	{
-	}
+		: Table(InTable) {}
 
 	virtual uint GetNumBroadPhaseLayers() const override
 	{
@@ -44,7 +40,7 @@ public:
 		return JPH::BroadPhaseLayer(Table.ObjectToBroadphase[idx]);
 	}
 
-#if defined(JPH_EXTERNAL_PROFILE) || defined(JPH_PROFILE_ENABLED)
+	#if defined(JPH_EXTERNAL_PROFILE) || defined(JPH_PROFILE_ENABLED)
 	virtual const char* GetBroadPhaseLayerName(JPH::BroadPhaseLayer inLayer) const override
 	{
 		const int32 idx = static_cast<int32>(static_cast<JPH::BroadPhaseLayer::Type>(inLayer));
@@ -54,7 +50,7 @@ public:
 		}
 		return "BroadPhaseLayer";
 	}
-#endif // JPH_EXTERNAL_PROFILE || JPH_PROFILE_ENABLED
+	#endif // JPH_EXTERNAL_PROFILE || JPH_PROFILE_ENABLED
 
 private:
 	const FJoltLayerTable& Table;
@@ -65,9 +61,7 @@ class ObjectVsBroadPhaseLayerFilterImpl final : public JPH::ObjectVsBroadPhaseLa
 {
 public:
 	explicit ObjectVsBroadPhaseLayerFilterImpl(const FJoltLayerTable& InTable)
-		: Table(InTable)
-	{
-	}
+		: Table(InTable) {}
 
 	virtual bool ShouldCollide(JPH::ObjectLayer inLayer1, JPH::BroadPhaseLayer inLayer2) const override
 	{
@@ -103,14 +97,13 @@ private:
 	JPH::Array<JPH::BodyID> AllowedBodiesList;
 };
 
-class ObjectLayersFilter_UE final : public JPH::ObjectLayerFilter
+class ObjectLayersFilter_ForObjects_UE final : public JPH::ObjectLayerFilter
 {
 public:
-	explicit ObjectLayersFilter_UE(
-		const TSet<FName>& layerNames, const FJoltLayerTable& layerTable) :
-		layerNames(layerNames), layerTable(layerTable)
-	{
-	}
+	explicit ObjectLayersFilter_ForObjects_UE(
+		const TSet<FName>& layerNames, const FJoltLayerTable& layerTable)
+		: layerNames(layerNames)
+		, layerTable(layerTable) {}
 
 	virtual bool ShouldCollide(JPH::ObjectLayer inLayer) const override
 	{
@@ -118,18 +111,17 @@ public:
 	}
 
 private:
-	const TSet<FName>& layerNames;
+	const TSet<FName>&     layerNames;
 	const FJoltLayerTable& layerTable;
 };
 
-class BroadPhaseLayersFilter_UE final : public JPH::BroadPhaseLayerFilter
+class BroadPhaseLayersFilter_ForObjects_UE final : public JPH::BroadPhaseLayerFilter
 {
 public:
-	explicit BroadPhaseLayersFilter_UE(
-		const TSet<FName>& layerNames, const FJoltLayerTable& layerTable) :
-		layerNames(layerNames), layerTable(layerTable)
-	{
-	}
+	explicit BroadPhaseLayersFilter_ForObjects_UE(
+		const TSet<FName>& layerNames, const FJoltLayerTable& layerTable)
+		: layerNames(layerNames)
+		, layerTable(layerTable) {}
 
 	virtual bool ShouldCollide(JPH::BroadPhaseLayer inLayer) const override
 	{
@@ -137,6 +129,66 @@ public:
 	}
 
 private:
-	const TSet<FName>& layerNames;
+	const TSet<FName>&     layerNames;
+	const FJoltLayerTable& layerTable;
+};
+
+class ObjectLayersFilter_ByLayers_UE final : public JPH::ObjectLayerFilter
+{
+public:
+	explicit ObjectLayersFilter_ByLayers_UE(
+		const TArray<FName>& layerNames, const FJoltLayerTable& layerTable)
+		: layerTable(layerTable)
+	{
+		layers.Reserve(layerNames.Num());
+		for (const FName& LayerName : layerNames)
+			layers.Emplace(layerTable.NameToObjectLayer[LayerName]);
+	}
+
+	virtual bool ShouldCollide(JPH::ObjectLayer inLayer) const override
+	{
+		if (layers.IsEmpty())
+			return true;
+
+		for (int32 layer : layers)
+		{
+			if (layerTable.ObjectPairCollides(inLayer, layer))
+				return true;
+		}
+		return false;
+	}
+
+private:
+	TArray<int32>          layers;
+	const FJoltLayerTable& layerTable;
+};
+
+class BroadPhaseLayersFilter_ByLayers_UE final : public JPH::BroadPhaseLayerFilter
+{
+public:
+	explicit BroadPhaseLayersFilter_ByLayers_UE(
+		const TArray<FName>& layerNames, const FJoltLayerTable& layerTable)
+		: layerTable(layerTable)
+	{
+		layers.Reserve(layerNames.Num());
+		for (const FName& LayerName : layerNames)
+			layers.Emplace(layerTable.NameToObjectLayer[LayerName]);
+	}
+
+	virtual bool ShouldCollide(JPH::BroadPhaseLayer inLayer) const override
+	{
+		if (layers.IsEmpty())
+			return true;
+
+		for (int32 layer : layers)
+		{
+			if (layerTable.ObjectPairCollides(inLayer.GetValue(), layer))
+				return true;
+		}
+		return false;
+	}
+
+private:
+	TArray<int32>          layers;
 	const FJoltLayerTable& layerTable;
 };

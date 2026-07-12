@@ -8,6 +8,8 @@
 #include "Containers/Map.h"
 #include "Engine/StaticMesh.h"
 #include "EngineUtils.h"
+#include "JoltBodyID.h"
+#include "JoltCharacter.h"
 #include "JoltDataAsset.h"
 #include "JoltWorker.h"
 #include "JoltPhysicsMaterial.h"
@@ -27,19 +29,36 @@
 #include "UObject/SavePackage.h"
 #include "UObject/UObjectIterator.h"
 #if WITH_EDITOR
-	#include "Editor.h"
+#include "Editor.h"
 #endif
 
 DEFINE_LOG_CATEGORY(JoltSubSystemLogs);
+
+namespace
+{
+	void PopulateIgnoredBodyFilter(JPH::IgnoreMultipleBodiesFilter& OutFilter, const TArray<FJoltBodyID>& IgnoredBodyIDs)
+	{
+		OutFilter.Clear();
+		OutFilter.Reserve(IgnoredBodyIDs.Num());
+
+		for (const FJoltBodyID& ignoredBodyID : IgnoredBodyIDs)
+		{
+			if (ignoredBodyID.IsValid())
+			{
+				OutFilter.IgnoreBody(ignoredBodyID.ToJoltBodyID());
+			}
+		}
+	}
+}
 
 void UJoltSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 
 	Super::Initialize(Collection);
 	JPH::Trace = JoltHelpers::UETrace;
-#ifdef JPH_ENABLE_ASSERTS
+	#ifdef JPH_ENABLE_ASSERTS
 	JPH::AssertFailed = JoltHelpers::UEAssertFailed;
-#endif
+	#endif
 	JPH::RegisterDefaultAllocator();
 	JPH::Factory::sInstance = new JPH::Factory();
 	JPH::RegisterTypes();
@@ -56,7 +75,11 @@ void UJoltSubsystem::Deinitialize()
 
 	bIsReady = false;
 
-	for (TPair<uint32, JPH::Body*>& pair : BodyIDBodyMap)
+	for (auto Character : JoltCharacters)
+		Character->RemoveFromPhysicsSystem();
+	JoltCharacters.Empty();
+
+	for (TPair<FJoltBodyID, JPH::Body*>& pair : BodyIDBodyMap)
 	{
 		BodyInterface->RemoveBody(pair.Value->GetID());
 		BodyInterface->DestroyBody(pair.Value->GetID());
@@ -65,10 +88,10 @@ void UJoltSubsystem::Deinitialize()
 	delete JoltWorker;
 
 	// delete SaveStateFilterImpl;
-#ifdef JPH_DEBUG_RENDERER
+	#ifdef JPH_DEBUG_RENDERER
 	delete JoltDebugRendererImpl;
 	delete DrawSettings;
-#endif
+	#endif
 	delete BroadPhaseLayerInterface;
 	delete ObjectVsBroadphaseLayerFilter;
 	delete ObjectVsObjectLayerFilter;
@@ -141,7 +164,6 @@ void UJoltSubsystem::SetTimeScale(double deltaSeconds)
 // Called when world is ready to start gameplay before the game mode transitions to the correct state and call BeginPlay on all actors
 void UJoltSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
-
 	Super::OnWorldBeginPlay(InWorld);
 
 	UE_LOG(JoltSubSystemLogs, Log, TEXT("Jolt worker running "));
@@ -149,7 +171,7 @@ void UJoltSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 
 	if (ALandscape* landscape = FindSingleLandscape(&InWorld))
 	{
-#if WITH_EDITOR
+		#if WITH_EDITOR
 		GetAllLandscapeHeights(landscape);
 		HandleLandscapeMeshes(landscape);
 		if (!CookBodies())
@@ -157,7 +179,7 @@ void UJoltSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 			UE_LOG(JoltSubSystemLogs, Error, TEXT("Landscape data package wasn't saved!"));
 		}
 		UE_LOG(JoltSubSystemLogs, Log, TEXT("Landscape data saved to file"));
-#endif
+		#endif
 		LoadLandscapeFromDataAsset();
 	}
 
@@ -186,7 +208,7 @@ void UJoltSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 void UJoltSubsystem::AddAllJoltActors(const UWorld* World)
 {
 	TArray<const AActor*> staticActors;
-	TArray<AActor*>		  dynamicActors;
+	TArray<AActor*>       dynamicActors;
 
 	if (!World)
 	{
@@ -249,15 +271,18 @@ void UJoltSubsystem::Tick(float deltaSeconds)
 
 	Accumulator += deltaSeconds;
 
+	bool bSteppedAtLeastOnce = false;
 	while (Accumulator >= ConfiguredDeltaSeconds)
 	{
 		StepPhysics();
 		Accumulator -= ConfiguredDeltaSeconds;
+		bSteppedAtLeastOnce = true;
 	}
 
 	const double alpha = Accumulator / ConfiguredDeltaSeconds;
 	PhysicsAlpha_ = alpha;
-
+	if (bSteppedAtLeastOnce)
+		RecordFrames();
 	InterpolatePhysicsFrame(alpha);
 
 	for (const TDelegate<void(float)>& cb : PostInterpolationCallbacks)
@@ -274,14 +299,13 @@ void UJoltSubsystem::StepPhysics(bool bWithCallbacks)
 		? JoltWorker->StepPhysicsWithCallBacks()
 		: JoltWorker->StepPhysics();
 
-	RecordFrames();
-#ifdef JPH_DEBUG_RENDERER
+	#ifdef JPH_DEBUG_RENDERER
 	if (!bHasDrawnDebugLinesThisFrame)
 	{
 		DrawDebugLines();
 		bHasDrawnDebugLinesThisFrame = true;
 	}
-#endif
+	#endif
 }
 
 void UJoltSubsystem::RecordFrames()
@@ -291,10 +315,10 @@ void UJoltSubsystem::RecordFrames()
 	{
 		Entry.FrameHistory.PrevLocation = Entry.FrameHistory.CurrentLocation;
 		Entry.FrameHistory.PrevRotation = Entry.FrameHistory.CurrentRotation;
-		
+
 		FTransform CurrentTransform;
-		JoltGetPhysicsTransform(*Entry.JoltBodyID, CurrentTransform);
-		ApplyLocalTxIfAny(Entry.JoltBodyID, CurrentTransform);
+		JoltGetPhysicsTransform(Entry.JoltBodyID, CurrentTransform);
+		ApplyLocalTxIfAny(&Entry.JoltBodyID, CurrentTransform);
 		Entry.FrameHistory.CurrentLocation = CurrentTransform.GetLocation();
 		Entry.FrameHistory.CurrentRotation = CurrentTransform.GetRotation().Rotator();
 	}
@@ -306,13 +330,12 @@ void UJoltSubsystem::InterpolatePhysicsFrame(const double& alpha)
 	for (int32 i = JoltBodyActors.Num() - 1; i >= 0; --i)
 	{
 		FJoltBodyActor& JoltBodyActor = JoltBodyActors[i];
-		auto OwningActor = JoltBodyActor.Actor.Pin();
+		auto            OwningActor = JoltBodyActor.Actor.Pin();
 		if (OwningActor == nullptr)
 		{
 			JoltBodyActors.RemoveAtSwap(i);
 			continue;
 		}
-		
 		OwningActor->SetActorLocationAndRotation(
 			FMath::Lerp(
 				JoltBodyActor.FrameHistory.PrevLocation,
@@ -355,14 +378,14 @@ void UJoltSubsystem::InitPhysicsSystem(
 	int cMaxContactConstraints)
 {
 
-#ifdef JPH_DEBUG_RENDERER
+	#ifdef JPH_DEBUG_RENDERER
 	DrawSettings = new JPH::BodyManager::DrawSettings;
-	DrawSettings->mDrawShape = true;		// Draw the shapes of the bodies
+	DrawSettings->mDrawShape = true;        // Draw the shapes of the bodies
 	DrawSettings->mDrawBoundingBox = false; // Optionally, draw bounding boxes
 	DrawSettings->mDrawShapeWireframe = false;
 	DrawSettings->mDrawWorldTransform = true;
 	// DrawSettings->mDrawShapeWireframe
-#endif
+	#endif
 
 	// Build the runtime layer table from UJoltSettings before constructing the filter classes —
 	// they hold a reference to it for their entire lifetime.
@@ -379,9 +402,9 @@ void UJoltSubsystem::InitPhysicsSystem(
 
 	MainPhysicsSystem = new JPH::PhysicsSystem;
 
-#ifdef JPH_DEBUG_RENDERER
+	#ifdef JPH_DEBUG_RENDERER
 	JoltDebugRendererImpl = new UEJoltDebugRenderer(GetWorld());
-#endif
+	#endif
 	// Jolt uses Y axis as the up direction, and unreal uses the Z axis. So, set gravity for Y
 	MainPhysicsSystem->SetGravity(JPH::Vec3Arg(0.0f, -9.8f, 0.0f));
 	MainPhysicsSystem->Init(
@@ -400,9 +423,9 @@ void UJoltSubsystem::InitPhysicsSystem(
 	UE_LOG(JoltSubSystemLogs, Log, TEXT("Jolt subsystem init complete"));
 }
 
-int64 UJoltSubsystem::AddDynamicBody(AActor* Actor, const float& friction, const float& restitution, const float& mass, FName Layer)
+FJoltBodyID UJoltSubsystem::AddDynamicBody(AActor* Actor, const float& friction, const float& restitution, const float& mass, FName Layer)
 {
-	int64 ID = 0;
+	FJoltBodyID ID;
 	// RelTransform is already in world space: it is ShapeLocalTransform * ActorWorldTransform,
 	// so it correctly accounts for the collision shape's centre offset (e.g. FKSphylElem::Center)
 	// relative to the component/actor origin.  Using the bare actor transform here would ignore
@@ -413,19 +436,19 @@ int64 UJoltSubsystem::AddDynamicBody(AActor* Actor, const float& friction, const
 		auto joltBodyID = AddDynamicBodyCollision(Extracted.Shape, Extracted.WorldTransform, friction, restitution, mass, Layer);
 		if (joltBodyID != nullptr)
 		{
-			JoltBodyActors.Emplace(FJoltBodyActor{joltBodyID, Actor});
-			ID = joltBodyID->GetIndexAndSequenceNumber();
+			JoltBodyActors.Emplace(*joltBodyID, Actor);
+			ID = FJoltBodyID::FromJoltBodyID(*joltBodyID);
 		}
 	}
 	return ID;
 }
 
-int64 UJoltSubsystem::AddDynamicShapes(
-	AActor* actor,
+FJoltBodyID UJoltSubsystem::AddDynamicShapes(
+	AActor*                actor,
 	const FKAggregateGeom& aggregateGeom,
-	const FTransform& initialWorldTransform,
-	float friction, float restitution, float mass,
-	FName layerName)
+	const FTransform&      initialWorldTransform,
+	float                  friction, float restitution, float mass,
+	FName                  layerName)
 {
 	TArray<FExtractedShape> extractedShapes;
 	ExtractPhysicsGeometry(initialWorldTransform, aggregateGeom, nullptr, extractedShapes);
@@ -433,7 +456,7 @@ int64 UJoltSubsystem::AddDynamicShapes(
 	if (extractedShapes.Num() == 0)
 	{
 		UE_LOG(JoltSubSystemLogs, Error, TEXT("AddDynamicShapes failed: no collision shape could be extracted from AggregateGeom"));
-		return 0;
+		return {};
 	}
 
 	JPH::RefConst<JPH::Shape> shapeToUse = extractedShapes[0].Shape;
@@ -453,7 +476,7 @@ int64 UJoltSubsystem::AddDynamicShapes(
 		if (!compoundResult.IsValid())
 		{
 			UE_LOG(JoltSubSystemLogs, Error, TEXT("AddDynamicShapes failed to create compound shape: %s"), *FString(compoundResult.GetError().c_str()));
-			return 0;
+			return {};
 		}
 		shapeToUse = compoundResult.Get();
 	}
@@ -461,14 +484,14 @@ int64 UJoltSubsystem::AddDynamicShapes(
 	auto bodyID = AddDynamicBodyCollision(shapeToUse.GetPtr(), initialWorldTransform, friction, restitution, mass, layerName);
 	if (bodyID != nullptr && actor != nullptr)
 	{
-		JoltBodyActors.Emplace(FJoltBodyActor{bodyID, actor});
+		JoltBodyActors.Emplace(*bodyID, actor);
 	}
-	return bodyID != nullptr ? bodyID->GetIndexAndSequenceNumber() : 0;
+	return bodyID != nullptr ? FJoltBodyID::FromJoltBodyID(*bodyID) : FJoltBodyID{};
 }
 
-int64 UJoltSubsystem::AddStaticBody(const AActor* Body, const float& Friction, const float& Restitution, FName Layer)
+FJoltBodyID UJoltSubsystem::AddStaticBody(const AActor* Body, const float& Friction, const float& Restitution, FName Layer)
 {
-	int64 ID = 0;
+	FJoltBodyID ID;
 	// WorldTransform is already in world space (ShapeLocalTransform * ActorWorldTransform).
 	// Use it directly — do NOT compose it with GetActorTransform() again, that would
 	// double-apply the actor transform and produce an incorrect placement.
@@ -476,29 +499,29 @@ int64 UJoltSubsystem::AddStaticBody(const AActor* Body, const float& Friction, c
 	for (auto& Extracted : Shapes)
 	{
 		if (auto bodyID = AddStaticBodyCollision(Extracted.Shape, Extracted.WorldTransform, Friction, Restitution, Layer))
-			ID = bodyID->GetIndexAndSequenceNumber();
+			ID = FJoltBodyID::FromJoltBodyID(*bodyID);
 	}
 	return ID;
 }
 
-int64 UJoltSubsystem::AddStaticShapes(const FKAggregateGeom& AggregateGeom, const FTransform& worldTransform, const float& friction, const float& restitution, FName Layer)
+FJoltBodyID UJoltSubsystem::AddStaticShapes(const FKAggregateGeom& AggregateGeom, const FTransform& worldTransform, const float& friction, const float& restitution, FName Layer)
 {
-	int64 ID = 0;
+	FJoltBodyID             ID;
 	TArray<FExtractedShape> Shapes;
 	ExtractPhysicsGeometry(worldTransform, AggregateGeom, nullptr, Shapes);
 	for (auto& Extracted : Shapes)
 	{
 		if (auto bodyID = AddStaticBodyCollision(Extracted.Shape, Extracted.WorldTransform, friction, restitution, Layer))
-			ID = bodyID->GetIndexAndSequenceNumber();
+			ID = FJoltBodyID::FromJoltBodyID(*bodyID);
 	}
 	return ID;
 }
 
-int64 UJoltSubsystem::AddMeshShape(
-	const TArray<FVector>& vertices, const TArray<int32>& indices, const FTransform& worldTransform, 
-	bool bDynamic, float friction, float restitution, float Mass, FName Layer)
+FJoltBodyID UJoltSubsystem::AddMeshShape(
+	const TArray<FVector>& vertices, const TArray<int32>& indices, const FTransform& worldTransform,
+	bool                   bDynamic, float                friction, float            restitution, float Mass, FName Layer)
 {
-	int64 ID = 0;
+	FJoltBodyID             ID;
 	TArray<FExtractedShape> Shapes;
 	ExtractMeshShape(vertices, indices, worldTransform, Shapes);
 	for (auto& Extracted : Shapes)
@@ -506,20 +529,62 @@ int64 UJoltSubsystem::AddMeshShape(
 		if (bDynamic)
 		{
 			if (auto bodyID = AddDynamicBodyCollision(Extracted.Shape, Extracted.WorldTransform, friction, restitution, Mass, Layer))
-				ID = bodyID->GetIndexAndSequenceNumber();
-		} 
+				ID = FJoltBodyID::FromJoltBodyID(*bodyID);
+		}
 		else
 		{
 			if (auto bodyID = AddStaticBodyCollision(Extracted.Shape, Extracted.WorldTransform, friction, restitution, Layer))
-				ID = bodyID->GetIndexAndSequenceNumber();
+				ID = FJoltBodyID::FromJoltBodyID(*bodyID);
 		}
 	}
 	return ID;
 }
 
+FJoltCharacter* UJoltSubsystem::CreateCharacter(
+	const FVector& Location, const FRotator&  Rotation,
+	float          HalfHeight, float          Radius,
+	float          MaxPenetrationDepth, float MaxSlopeAngle, FName Layer)
+{
+	float JoltHalfHeight = JoltHelpers::ToJoltSize(
+		FMath::Max(0.0f, HalfHeight));
+	float JoltRadius = JoltHelpers::ToJoltSize(Radius);
+	auto  mStandingShape = JPH::RotatedTranslatedShapeSettings(
+		JPH::Vec3(0, JoltHalfHeight, 0),
+		JPH::Quat::sIdentity(),
+		new JPH::CapsuleShape(JoltHalfHeight - JoltRadius, JoltRadius)).Create().Get();
+	float CrouchHeight = JoltHalfHeight * .5f;
+	auto  mCrouchingShape = JPH::RotatedTranslatedShapeSettings(
+		JPH::Vec3(0, CrouchHeight + JoltRadius, 0),
+		JPH::Quat::sIdentity(),
+		new JPH::CapsuleShape(CrouchHeight, JoltRadius)).Create().Get();
+	MyCharacterSettings settings;
+	settings.mMaxSlopeAngle = JPH::DegreesToRadians(MaxSlopeAngle);
+	settings.mLayer = GetLayerTable().NameToObjectLayer[Layer];
+	settings.mShape = mStandingShape;
+	settings.mCrouchingShape = mCrouchingShape;
+	settings.mFriction = .0f;
+	// Accept contacts that touch the lower sphere of the capsule
+	settings.mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisY(), -JoltRadius);
+
+	auto            mPhysicsSystem = GetPhysicsSystem();
+	FJoltCharacter* mJoltCharacter = new FJoltCharacter(
+		&settings,
+		JoltHelpers::ToJoltPos(Location),
+		JoltHelpers::ToJoltRot(Rotation),
+		0, mPhysicsSystem);
+
+	mJoltCharacter->SetShape(settings.mShape, MaxPenetrationDepth);
+	mJoltCharacter->AddToPhysicsSystem(JPH::EActivation::Activate);
+	mJoltCharacter->Activate();
+	mJoltCharacter->mStepDown = JoltHelpers::ToJoltVec3(FVector(0, 0, 50.f));
+	check(mJoltCharacter->GetBodyID().IsInvalid() == false);
+	JoltCharacters.Add(mJoltCharacter);
+	return mJoltCharacter;
+}
+
 TArray<FExtractedShape> UJoltSubsystem::ExtractPhysicsGeometryFromActor(const AActor* actor)
 {
-	TArray<FExtractedShape> OutShapes;
+	TArray<FExtractedShape>                         OutShapes;
 	TInlineComponentArray<UPrimitiveComponent*, 20> Components;
 
 	actor->GetComponents(UPrimitiveComponent::StaticClass(), Components);
@@ -538,7 +603,7 @@ TArray<FExtractedShape> UJoltSubsystem::ExtractPhysicsGeometryFromActor(const AA
 void UJoltSubsystem::ExtractPhysicsGeometryFromComponent(const UPrimitiveComponent* Component, const FTransform& componentTransform, TArray<FExtractedShape>& OutShapes)
 {
 	UBodySetup* BodySetup = nullptr;
-	auto MeshComp = Cast<UStaticMeshComponent>(Component);
+	auto        MeshComp = Cast<UStaticMeshComponent>(Component);
 	if (MeshComp && MeshComp->GetStaticMesh())
 		BodySetup = MeshComp->GetStaticMesh()->GetBodySetup();
 	if (!BodySetup)
@@ -575,15 +640,15 @@ void UJoltSubsystem::ExtractComplexPhysicsGeometry(const FTransform& xformSoFar,
 
 	const FVector scale = xformSoFar.GetScale3D();
 
-	JPH::VertexList			 vertices;
+	JPH::VertexList          vertices;
 	JPH::IndexedTriangleList triangles;
 	JPH::PhysicsMaterialList physicsMaterialList;
-	const int				 MaterialIDX = 0;
+	const int                MaterialIDX = 0;
 
-	const auto&						  Particles = TriMesh->Particles();
+	const auto&                       Particles = TriMesh->Particles();
 	const Chaos::FTrimeshIndexBuffer& Elements = TriMesh->Elements();
-	const int32						  NumVerts = Particles.Size();
-	const int32						  NumTris = Elements.GetNumTriangles();
+	const int32                       NumVerts = Particles.Size();
+	const int32                       NumTris = Elements.GetNumTriangles();
 
 	vertices.reserve(NumVerts);
 	triangles.reserve(NumTris);
@@ -600,7 +665,7 @@ void UJoltSubsystem::ExtractComplexPhysicsGeometry(const FTransform& xformSoFar,
 	auto pushTri = [&](uint32 a, uint32 b, uint32 c) {
 		if (a < static_cast<uint32>(NumVerts) && b < static_cast<uint32>(NumVerts) && c < static_cast<uint32>(NumVerts))
 		{
-			triangles.push_back(JPH::IndexedTriangle(a, c, b, MaterialIDX));  // Swap b and c so the triangles face outward
+			triangles.push_back(JPH::IndexedTriangle(a, c, b, MaterialIDX)); // Swap b and c so the triangles face outward
 		}
 		else
 		{
@@ -635,7 +700,7 @@ void UJoltSubsystem::ExtractComplexPhysicsGeometry(const FTransform& xformSoFar,
 	}
 
 	// TODO: Caching mechanism for MeshShapes
-	JPH::MeshShapeSettings	meshSettings(vertices, triangles, physicsMaterialList);
+	JPH::MeshShapeSettings  meshSettings(vertices, triangles, physicsMaterialList);
 	JPH::Shape::ShapeResult res = meshSettings.Create();
 
 	if (!res.IsValid())
@@ -650,12 +715,12 @@ void UJoltSubsystem::ExtractMeshShape(const TArray<FVector>& ueVertices, const T
 {
 	const FVector scale = xformSoFar.GetScale3D();
 
-	JPH::VertexList			 joltVertices;
+	JPH::VertexList          joltVertices;
 	JPH::IndexedTriangleList triangles;
-	const int				 MaterialIDX = 0;
+	const int                MaterialIDX = 0;
 
-	const int32						  NumVerts = ueVertices.Num();
-	const int32						  NumTris = ueIndices.Num() / 3;
+	const int32 NumVerts = ueVertices.Num();
+	const int32 NumTris = ueIndices.Num() / 3;
 
 	joltVertices.reserve(NumVerts);
 	triangles.reserve(NumTris);
@@ -670,7 +735,7 @@ void UJoltSubsystem::ExtractMeshShape(const TArray<FVector>& ueVertices, const T
 	auto pushTri = [&](uint32 a, uint32 b, uint32 c) {
 		if (a < static_cast<uint32>(NumVerts) && b < static_cast<uint32>(NumVerts) && c < static_cast<uint32>(NumVerts))
 		{
-			triangles.push_back(JPH::IndexedTriangle(a, b, c, MaterialIDX));  // Swap b and c so the triangles face outward
+			triangles.push_back(JPH::IndexedTriangle(a, b, c, MaterialIDX)); // Swap b and c so the triangles face outward
 		}
 		else
 		{
@@ -691,8 +756,8 @@ void UJoltSubsystem::ExtractMeshShape(const TArray<FVector>& ueVertices, const T
 		return;
 	}
 
-	JPH::PhysicsMaterial physicalMaterial;
-	JPH::MeshShapeSettings	meshSettings(joltVertices, triangles);
+	JPH::PhysicsMaterial    physicalMaterial;
+	JPH::MeshShapeSettings  meshSettings(joltVertices, triangles);
 	JPH::Shape::ShapeResult res = meshSettings.Create();
 
 	if (!res.IsValid())
@@ -703,6 +768,13 @@ void UJoltSubsystem::ExtractMeshShape(const TArray<FVector>& ueVertices, const T
 	OutShapes.Emplace(res.Get(), xformSoFar);
 }
 
+FName UJoltSubsystem::GetLayerName(JPH::ObjectLayer Layer) const
+{
+	if (GetLayerTable().ObjectLayerNames.IsValidIndex(Layer))
+		return GetLayerTable().ObjectLayerNames[Layer];
+	return FName("InvalidLayer");
+}
+
 FRaycastResult UJoltSubsystem::RayCastNarrowPhase(const FVector& start, const FVector& end)
 {
 	return RayCastNarrowPhase(start, end, {});
@@ -710,21 +782,21 @@ FRaycastResult UJoltSubsystem::RayCastNarrowPhase(const FVector& start, const FV
 
 TArray<FRaycastResult> UJoltSubsystem::RayCastBroadPhase(const FVector& start, const FVector& end)
 {
-	return RayCastBroadPhase(start, end, {});
+	return RayCastBroadPhase_ForObjects(start, end, {});
 }
 
 void UJoltSubsystem::ExtractPhysicsGeometry(const FTransform& xformSoFar, const UBodySetup* bodySetup, TArray<FExtractedShape>& OutShapes)
 {
 	if (!ensure(bodySetup != nullptr))
 		return;
-	
+
 	auto physicsMaterial = GetJoltPhysicsMaterial(bodySetup->GetPhysMaterial());
 	ExtractPhysicsGeometry(xformSoFar, bodySetup->AggGeom, physicsMaterial, OutShapes);
 }
 
 void UJoltSubsystem::ExtractPhysicsGeometry(const FTransform& xformSoFar, const FKAggregateGeom& aggregateGeom, const JoltPhysicsMaterial* physicsMaterial, TArray<FExtractedShape>& OutShapes)
 {
-	auto scale = xformSoFar.GetScale3D();
+	auto                        scale = xformSoFar.GetScale3D();
 	JPH::CompoundShapeSettings* compoundShapeSettings = nullptr;
 
 	int shapeCount = aggregateGeom.BoxElems.Num() + aggregateGeom.SphereElems.Num() + aggregateGeom.SphylElems.Num() + aggregateGeom.ConvexElems.Num();
@@ -743,8 +815,8 @@ void UJoltSubsystem::ExtractPhysicsGeometry(const FTransform& xformSoFar, const 
 		JPH::Shape::ShapeResult compoundResult = compoundShapeSettings->Create();
 		if (compoundResult.IsValid())
 		{
-			OutShapes.Add({compoundResult.Get(), xformSoFar});
-		} 
+			OutShapes.Add({ compoundResult.Get(), xformSoFar });
+		}
 		else
 		{
 			UE_LOG(JoltSubSystemLogs, Error, TEXT("Failed to create compound collision shape: %s"), *FString(compoundResult.GetError().c_str()));
@@ -776,7 +848,7 @@ void UJoltSubsystem::ExtractAggGeomBoxes(const FTransform& xformSoFar, const FKA
 		FTransform ShapeXform(ueBox.Rotation, ueBox.Center);
 		// Shape transform adds to any relative transform already here
 		FTransform XForm = ShapeXform * xformSoFar;
-		OutShapes.Add({joltShape, XForm});
+		OutShapes.Add({ joltShape, XForm });
 	}
 }
 
@@ -832,18 +904,18 @@ void UJoltSubsystem::ExtractAggGeomCapsules(const FTransform& xformSoFar, const 
 void UJoltSubsystem::ExtractAggGeomConvex(const FTransform& xformSoFar, const FKAggregateGeom& aggregateGeom, const FVector& scale, const JoltPhysicsMaterial* physicsMaterial, JPH::CompoundShapeSettings* compoundShapeSettings, TArray<FExtractedShape>& OutShapes)
 {
 	// Convex hull
-	for (auto& ConVexElem : aggregateGeom.ConvexElems)
+	for (auto& ConVExElem : aggregateGeom.ConvexElems)
 	{
-		auto joltShape = GetConvexHullCollisionShape(ConVexElem, scale, physicsMaterial);
+		auto joltShape = GetConvexHullCollisionShape(ConVExElem, scale, physicsMaterial);
 		if (joltShape == nullptr)
 		{
 			continue;
 		}
 		if (compoundShapeSettings)
 		{
-			auto ConvexTransform = ConVexElem.GetTransform();
+			auto ConvexTransform = ConVExElem.GetTransform();
 			compoundShapeSettings->AddShape(
-				JoltHelpers::ToJoltVec3(ConvexTransform.GetLocation()* scale),
+				JoltHelpers::ToJoltVec3(ConvexTransform.GetLocation() * scale),
 				JoltHelpers::ToJoltRot(ConvexTransform.GetRotation()),
 				joltShape);
 			continue;
@@ -920,7 +992,7 @@ const JPH::ConvexHullShape* UJoltSubsystem::GetConvexHullCollisionShape(const FK
 	}
 
 	JPH::ConvexHullShapeSettings val(points);
-	JPH::Shape::ShapeResult		 result;
+	JPH::Shape::ShapeResult      result;
 
 	JPH::Ref<JPH::ConvexHullShape> shape = new JPH::ConvexHullShape(val, result);
 	if (!result.IsValid())
@@ -938,7 +1010,7 @@ const JPH::ConvexHullShape* UJoltSubsystem::GetConvexHullCollisionShape(const FK
 const JPH::BoxShape* UJoltSubsystem::GetBoxCollisionShape(const FVector& dimensions, const JoltPhysicsMaterial* material)
 {
 	// Simple brute force lookup for now, probably doesn't need anything more clever
-	JPH::Vec3 HalfSize = JoltHelpers::ToJoltVec3(dimensions * 0.5);
+	JPH::Vec3 HalfSize = JoltHelpers::ToJoltVec3(dimensions);
 	for (const JPH::BoxShape*& S : BoxShapes)
 	{
 		JPH::Vec3 Sz = S->GetHalfExtent();
@@ -1046,8 +1118,8 @@ const JPH::BodyID* UJoltSubsystem::AddDynamicBodyForExternalOwner(
 	const JPH::BodyID& bodyID,
 	const JPH::Shape*  shape,
 	const FTransform&  initialWorldTransform,
-	float friction, float restitution, float mass,
-	FName layerName)
+	float              friction, float restitution, float mass,
+	FName              layerName)
 {
 	return AddDynamicBodyCollision(bodyID, shape, initialWorldTransform, friction, restitution, mass, layerName);
 }
@@ -1151,7 +1223,7 @@ const JPH::BodyID* UJoltSubsystem::AddBodyToSimulation(const JPH::BodyID* bodyID
 		return nullptr;
 	}
 
-	JPH::Body* createdBody = BodyInterface->CreateBodyWithID(*bodyID, shapeSettings);
+	JPH::Body* createdBody = BodyInterface->CreateBody(shapeSettings);
 	if (!ensure(createdBody != nullptr))
 	{
 		UE_LOG(JoltSubSystemLogs, Error, TEXT("failed to create %s body with ID: %d"), *JoltHelpers::EMotionTypeToString(shapeSettings.mMotionType), bodyID->GetIndexAndSequenceNumber());
@@ -1160,23 +1232,30 @@ const JPH::BodyID* UJoltSubsystem::AddBodyToSimulation(const JPH::BodyID* bodyID
 	createdBody->SetRestitution(restitution);
 	createdBody->SetFriction(friction);
 
-	BodyIDBodyMap.Add(createdBody->GetID().GetIndexAndSequenceNumber(), createdBody);
+	BodyIDBodyMap.Add(FJoltBodyID::FromJoltBodyID(createdBody->GetID()), createdBody);
 	BodyInterface->AddBody(createdBody->GetID(), JPH::EActivation::Activate);
-	return bodyID;
+	return &createdBody->GetID();
 }
 
-void UJoltSubsystem::RemoveBodyForExternalOwner(int64 bodyID)
+void UJoltSubsystem::RemoveBodyForExternalOwner(const FJoltBodyID& bodyID)
 {
-	JPH::BodyID JoltBodyID = JPH::BodyID(bodyID);
+	JPH::BodyID JoltBodyID = bodyID.ToJoltBodyID();
 	if (JoltBodyID.IsInvalid() || BodyInterface == nullptr)
 		return;
 
-	BodyIDBodyMap.Remove(JoltBodyID.GetIndexAndSequenceNumber());
+	BodyIDBodyMap.Remove(bodyID);
 	BodyInterface->RemoveBody(JoltBodyID);
 	BodyInterface->DestroyBody(JoltBodyID);
 }
 
-TArray<int32> UJoltSubsystem::CollideShape(const UShapeComponent* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& offset)
+void UJoltSubsystem::AddActorBodyMapping(const JPH::BodyID& bodyID, const TWeakObjectPtr<AActor>& actor)
+{
+	JoltBodyActors.Emplace(bodyID, actor);
+}
+
+TArray<int32> UJoltSubsystem::CollideShape(
+	const UShapeComponent* shape, const FTransform&             shapeCOM,
+	const TSet<FName>&     broadPhaseLayers, const TSet<FName>& objectLayers)
 {
 	JPH::AllHitCollisionCollector<JPH::CollideShapeCollector> collector;
 
@@ -1188,22 +1267,15 @@ TArray<int32> UJoltSubsystem::CollideShape(const UShapeComponent* shape, const F
 	// settings.mActiveEdgeMode = JPH::EActiveEdgeMode::CollideWithAll;
 	settings.mBackFaceMode = JPH::EBackFaceMode::CollideWithBackFaces;
 
-	const USphereComponent* SphereComponent = Cast<const USphereComponent>(shape);
-
-#ifdef JPH_DEBUG_RENDERER
-	if (JoltSettings->bEnableDebugRenderer)
-	{
-		DrawDebugSphere(shapeCOM.GetLocation(), SphereComponent->GetScaledSphereRadius(), FColor::Magenta, false, 2.0f);
-	}
-#endif
-
 	MainPhysicsSystem->GetNarrowPhaseQuery().CollideShape(
 		joltShape,
-		JoltHelpers::ToJoltVec3(shapeScale, false), // We don't want to adjust the scale multiplier
+		JoltHelpers::ToJoltVec3(shapeCOM.GetScale3D(), false), // We don't want to adjust the scale multiplier
 		JoltHelpers::ToJoltTransform(shapeCOM),
 		settings,
 		JoltHelpers::ToJoltPos(shapeCOM.GetLocation()),
-		collector);
+		collector,
+		BroadPhaseLayersFilter_ForObjects_UE(broadPhaseLayers, LayerTable),
+		ObjectLayersFilter_ForObjects_UE(objectLayers, LayerTable));
 
 	TArray<int32> foundBodyIDs = TArray<int32>();
 	for (JPH::CollideShapeResult& val : collector.mHits)
@@ -1213,84 +1285,128 @@ TArray<int32> UJoltSubsystem::CollideShape(const UShapeComponent* shape, const F
 	return foundBodyIDs;
 }
 
-void UJoltSubsystem::DrawDebugSphere(const FVector& Center, float Radius, const FColor& Color, bool bPersistent, float LifeTime) const
+TArray<int32> UJoltSubsystem::CollideShape_ByLayers(
+	const UShapeComponent* shape, const FTransform&               shapeCOM,
+	const TArray<FName>&   broadPhaseLayers, const TArray<FName>& objectLayers)
 {
-#ifdef JPH_DEBUG_RENDERER
+	JPH::AllHitCollisionCollector<JPH::CollideShapeCollector> collector;
+
+	const JPH::Shape* joltShape = ProcessShapeElement(shape);
+	check(joltShape != nullptr);
+	check(MainPhysicsSystem != nullptr);
+
+	JPH::CollideShapeSettings settings;
+	// settings.mActiveEdgeMode = JPH::EActiveEdgeMode::CollideWithAll;
+	settings.mBackFaceMode = JPH::EBackFaceMode::CollideWithBackFaces;
+
+	MainPhysicsSystem->GetNarrowPhaseQuery().CollideShape(
+		joltShape,
+		JoltHelpers::ToJoltVec3(shapeCOM.GetScale3D(), false), // We don't want to adjust the scale multiplier
+		JoltHelpers::ToJoltTransform(shapeCOM),
+		settings,
+		JoltHelpers::ToJoltPos(FVector::ZeroVector),
+		collector,
+		BroadPhaseLayersFilter_ByLayers_UE(broadPhaseLayers, LayerTable),
+		ObjectLayersFilter_ByLayers_UE(objectLayers, LayerTable));
+
+	TArray<int32> foundBodyIDs = TArray<int32>();
+	for (JPH::CollideShapeResult& val : collector.mHits)
+	{
+		foundBodyIDs.Add(val.mBodyID2.GetIndexAndSequenceNumber());
+	}
+	#ifdef JPH_DEBUG_RENDERER
+	if (GetDebugRendererForDraw())
+	{
+		joltShape->Draw(
+			GetDebugRendererForDraw(),
+			JoltHelpers::ToJoltTransform(shapeCOM),
+			JoltHelpers::ToJoltVec3(shapeCOM.GetScale3D(), false),
+			foundBodyIDs.IsEmpty() ? JPH::Color(255, 0, 0) : JPH::Color(0, 255, 0),
+			false,
+			true);
+	}
+	#endif
+	return foundBodyIDs;
+}
+
+void UJoltSubsystem::JoltDrawDebugSphere(const FVector& Center, float Radius, const FColor& Color, bool bPersistent, float LifeTime) const
+{
+	#ifdef JPH_DEBUG_RENDERER
 	if (UEJoltDebugRenderer* DebugRenderer = GetDebugRendererForDraw())
 	{
 		DebugRenderer->DrawDebugSphere(Center, Radius, Color, bPersistent, LifeTime);
 	}
-#endif
+	#endif
 }
 
-void UJoltSubsystem::DrawDebugBox(const FVector& Center, const FVector& Extent, const FQuat& Rotation, const FColor& Color, bool bPersistent, float LifeTime) const
+void UJoltSubsystem::JoltDrawDebugBox(const FVector& Center, const FVector& Extent, const FQuat& Rotation, const FColor& Color, bool bPersistent, float LifeTime) const
 {
-#ifdef JPH_DEBUG_RENDERER
+	#ifdef JPH_DEBUG_RENDERER
 	if (UEJoltDebugRenderer* DebugRenderer = GetDebugRendererForDraw())
 	{
 		DebugRenderer->DrawDebugBox(Center, Extent, Rotation, Color, bPersistent, LifeTime);
 	}
-#endif
+	#endif
 }
 
-void UJoltSubsystem::DrawDebugTriangle(const FVector& V1, const FVector& V2, const FVector& V3, const FColor& Color, bool bPersistent, float LifeTime) const
+void UJoltSubsystem::JoltDrawDebugTriangle(const FVector& V1, const FVector& V2, const FVector& V3, const FColor& Color, bool bPersistent, float LifeTime) const
 {
-#ifdef JPH_DEBUG_RENDERER
+	#ifdef JPH_DEBUG_RENDERER
 	if (UEJoltDebugRenderer* DebugRenderer = GetDebugRendererForDraw())
 	{
 		DebugRenderer->DrawDebugTriangle(V1, V2, V3, Color, bPersistent, LifeTime);
 	}
-#endif
+	#endif
 }
 
-void UJoltSubsystem::DrawDebugCapsule(const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, bool bPersistent, float LifeTime) const
+void UJoltSubsystem::JoltDrawDebugCapsule(const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, bool bPersistent, float LifeTime) const
 {
-#ifdef JPH_DEBUG_RENDERER
+	#ifdef JPH_DEBUG_RENDERER
 	if (UEJoltDebugRenderer* DebugRenderer = GetDebugRendererForDraw())
 	{
 		DebugRenderer->DrawDebugCapsule(Center, HalfHeight, Radius, Rotation, Color, bPersistent, LifeTime);
 	}
-#endif
+	#endif
 }
 
-void UJoltSubsystem::DrawDebugCylinder(const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, bool bPersistent, float LifeTime) const
+void UJoltSubsystem::JoltDrawDebugCylinder(const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, bool bPersistent, float LifeTime) const
 {
-#ifdef JPH_DEBUG_RENDERER
+	#ifdef JPH_DEBUG_RENDERER
 	if (UEJoltDebugRenderer* DebugRenderer = GetDebugRendererForDraw())
 	{
 		DebugRenderer->DrawDebugCylinder(Center, HalfHeight, Radius, Rotation, Color, bPersistent, LifeTime);
 	}
-#endif
+	#endif
 }
 
-void UJoltSubsystem::DrawDebugConvexHull(const TArray<FVector>& Points, const FColor& Color, bool bPersistent, float LifeTime) const
+void UJoltSubsystem::JoltDrawDebugConvexHull(const TArray<FVector>& Points, const FColor& Color, bool bPersistent, float LifeTime) const
 {
-#ifdef JPH_DEBUG_RENDERER
+	#ifdef JPH_DEBUG_RENDERER
 	if (UEJoltDebugRenderer* DebugRenderer = GetDebugRendererForDraw())
 	{
 		DebugRenderer->DrawDebugConvexHull(Points, Color, bPersistent, LifeTime);
 	}
-#endif
+	#endif
 }
 
-void UJoltSubsystem::DrawDebugMesh(const TArray<FVector>& Vertices, const TArray<uint32>& Indices, const FColor& Color, bool bPersistent, float LifeTime) const
+void UJoltSubsystem::JoltDrawDebugMesh(const TArray<FVector>& Vertices, const TArray<uint32>& Indices, const FColor& Color, bool bPersistent, float LifeTime) const
 {
-#ifdef JPH_DEBUG_RENDERER
+	#ifdef JPH_DEBUG_RENDERER
 	if (UEJoltDebugRenderer* DebugRenderer = GetDebugRendererForDraw())
 	{
 		DebugRenderer->DrawDebugMesh(Vertices, Indices, Color, bPersistent, LifeTime);
 	}
-#endif
+	#endif
 }
 
-void UJoltSubsystem::DrawDebugPlane(const FVector& Center, const FVector& Normal, float Size, const FColor& Color, bool bPersistent, float LifeTime) const
+void UJoltSubsystem::JoltDrawDebugPlane(const FVector& Center, const FVector& Normal, float Size, const FColor& Color, bool bPersistent, float LifeTime) const
 {
-#ifdef JPH_DEBUG_RENDERER
+	#ifdef JPH_DEBUG_RENDERER
 	if (UEJoltDebugRenderer* DebugRenderer = GetDebugRendererForDraw())
 	{
 		DebugRenderer->DrawDebugPlane(Center, Normal, Size, Color, bPersistent, LifeTime);
 	}
-#endif
+	#endif
 }
 
 void UJoltSubsystem::RayCastShapeNarrowPhase(const UShapeComponent* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& offset, NarrowPhaseQueryCallback& hitCallback)
@@ -1334,11 +1450,19 @@ void UJoltSubsystem::RayCastShapeNarrowPhase(const UShapeComponent* shape, const
 
 TArray<FCastShapeResult> UJoltSubsystem::CastShapeMultiInternal(const JPH::Shape* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& direction) const
 {
+	return CastShapeMultiInternal_ByLayers(shape, shapeScale, shapeCOM, direction, {}, {}, {});
+}
+
+TArray<FCastShapeResult> UJoltSubsystem::CastShapeMultiInternal_ByLayers(
+	const JPH::Shape*      shape, const FVector&                  shapeScale, const FTransform& shapeCOM, const FVector& direction,
+	const TArray<FName>&   broadPhaseLayers, const TArray<FName>& objectLayers,
+	const JPH::BodyFilter& inBodyFilter) const
+{
 	TArray<FCastShapeResult> shapeCastResults;
 
 	if (shape == nullptr || MainPhysicsSystem == nullptr)
 		return shapeCastResults;
-	
+
 	float maxDist = FMath::Square(direction.Size());
 
 	JPH::RShapeCast shapeCast{ shape, JoltHelpers::ToJoltVec3(shapeScale, false), JoltHelpers::ToJoltTransform(shapeCOM), JoltHelpers::ToJoltVec3(direction, false) };
@@ -1351,9 +1475,17 @@ TArray<FCastShapeResult> UJoltSubsystem::CastShapeMultiInternal(const JPH::Shape
 	JPH::AllHitCollisionCollector<JPH::CastShapeCollector> collector;
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(Jolt_CastShapeMultiInternal);
-		MainPhysicsSystem->GetNarrowPhaseQuery().CastShape(shapeCast, settings, JPH::RVec3::sZero(), collector);
+		MainPhysicsSystem->GetNarrowPhaseQuery().CastShape(
+			shapeCast,
+			settings,
+			JPH::RVec3::sZero(),
+			collector,
+			BroadPhaseLayersFilter_ByLayers_UE(broadPhaseLayers, LayerTable),
+			ObjectLayersFilter_ByLayers_UE(objectLayers, LayerTable),
+			inBodyFilter);
 	}
 
+	collector.Sort();
 	shapeCastResults.Reserve(collector.mHits.size());
 	for (auto& hit : collector.mHits)
 	{
@@ -1364,36 +1496,86 @@ TArray<FCastShapeResult> UJoltSubsystem::CastShapeMultiInternal(const JPH::Shape
 		auto& body = bodyLock.GetBody();
 		if (body.IsSensor())
 			continue;
-		
+
 		float DistSq = FVector::DistSquared(JoltHelpers::ToUESize(hit.mContactPointOn2), shapeCOM.GetLocation());
 		if (DistSq > maxDist)
 			continue;
 
 		shapeCastResults.Add({
-			hit.mBodyID2.GetIndexAndSequenceNumber(),
+			FJoltBodyID(hit.mBodyID2),
+			shapeCOM.GetLocation() + direction * hit.mFraction * 100.f,
 			JoltHelpers::ToUESize(hit.mContactPointOn2),
-			JoltHelpers::ToUESize(hit.mContactPointOn1)
+			JoltHelpers::ToUESize(hit.mContactPointOn1),
+			hit.mFraction
 		});
 	}
-
-	shapeCastResults.Sort([&shapeCOM](const FCastShapeResult& A, const FCastShapeResult& B)
-	{
-		return FVector::DistSquared(shapeCOM.GetLocation(), A.ContactLocationFoundShape) < FVector::DistSquared(shapeCOM.GetLocation(), B.ContactLocationFoundShape);
-	});
 
 	return shapeCastResults;
 }
 
-bool UJoltSubsystem::CastShapeSingleInternal(const JPH::Shape* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& direction, FCastShapeResult& outHit) const
+bool UJoltSubsystem::CastShapeSingleInternal(
+	const JPH::Shape* shape, const FVector&        shapeScale, const FTransform&  shapeCOM,
+	const FVector&    direction, FCastShapeResult& outHit, const JPH::BodyFilter& inBodyFilter) const
 {
 	outHit = FCastShapeResult{};
-	auto shapeCastResults = CastShapeMultiInternal(shape, shapeScale, shapeCOM, direction);
-	if (shapeCastResults.IsEmpty())
-	{
+
+	if (shape == nullptr || MainPhysicsSystem == nullptr)
 		return false;
+
+	float maxDist = FMath::Square(direction.Size());
+
+	JPH::RShapeCast shapeCast{ shape, JoltHelpers::ToJoltVec3(shapeScale, false), JoltHelpers::ToJoltTransform(shapeCOM), JoltHelpers::ToJoltVec3(direction, false) };
+
+	JPH::ShapeCastSettings settings;
+	settings.mReturnDeepestPoint = false;
+	settings.mBackFaceModeTriangles = JPH::EBackFaceMode::CollideWithBackFaces;
+	settings.mBackFaceModeConvex = JPH::EBackFaceMode::CollideWithBackFaces;
+
+	JPH::ClosestHitCollisionCollector<JPH::CastShapeCollector> collector;
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(Jolt_CastShapeSingleInternal_WithFilter);
+		MainPhysicsSystem->GetNarrowPhaseQuery().CastShape(
+			shapeCast,
+			settings,
+			JPH::RVec3::sZero(),
+			collector,
+			{},
+			{},
+			inBodyFilter);
 	}
-	outHit = shapeCastResults[0];
+
+	if (!collector.HadHit())
+		return false;
+
+	JPH::BodyLockRead bodyLock(MainPhysicsSystem->GetBodyLockInterfaceNoLock(), collector.mHit.mBodyID2);
+	if (!bodyLock.Succeeded())
+		return false;
+
+	auto& body = bodyLock.GetBody();
+	if (body.IsSensor())
+		return false;
+
+	float DistSq = FVector::DistSquared(JoltHelpers::ToUESize(collector.mHit.mContactPointOn2), shapeCOM.GetLocation());
+	if (DistSq > maxDist)
+		return false;
+
+	outHit = {
+		FJoltBodyID(collector.mHit.mBodyID2),
+		shapeCOM.GetLocation() + direction * collector.mHit.mFraction * 100.f,
+		JoltHelpers::ToUESize(collector.mHit.mContactPointOn2),
+		JoltHelpers::ToUESize(collector.mHit.mContactPointOn1),
+		collector.mHit.mFraction
+	};
+
 	return true;
+}
+
+bool UJoltSubsystem::CastShapeSingle(
+	const JPH::Shape* inShape, const FVector&        inShapeScale, const FTransform& inShapeCOM,
+	const FVector&    inDirection, FCastShapeResult& outHit, const JPH::BodyFilter&  inBodyFilter) const
+{
+	return CastShapeSingleInternal(
+		inShape, inShapeScale, inShapeCOM, inDirection, outHit, inBodyFilter);
 }
 
 TArray<FCastShapeResult> UJoltSubsystem::CastShape(const UShapeComponent* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& direction)
@@ -1403,42 +1585,79 @@ TArray<FCastShapeResult> UJoltSubsystem::CastShape(const UShapeComponent* shape,
 	return CastShapeMultiInternal(joltShape, shapeScale, shapeCOM, direction);
 }
 
-bool UJoltSubsystem::SphereTraceSingle(const FVector& start, const FVector& end, float radius, FCastShapeResult& outHit)
+bool UJoltSubsystem::SphereTraceSingle(const FVector& start, const FVector& end, float radius, FCastShapeResult& outHit, const TArray<FJoltBodyID>& ignoredBodyIDs)
 {
-	auto sphereShape = GetSphereCollisionShape(radius);
-	return CastShapeSingleInternal(sphereShape, FVector::OneVector, FTransform(FQuat::Identity, start), end - start, outHit);
+	auto                            sphereShape = GetSphereCollisionShape(radius);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CastShapeSingleInternal(sphereShape, FVector::OneVector, FTransform(FQuat::Identity, start), end - start, outHit, ignoredBodiesFilter);
 }
 
-TArray<FCastShapeResult> UJoltSubsystem::SphereTraceMulti(const FVector& start, const FVector& end, float radius)
+TArray<FCastShapeResult> UJoltSubsystem::SphereTraceMulti(const FVector& start, const FVector& end, float radius, const TArray<FJoltBodyID>& ignoredBodyIDs)
 {
-	auto sphereShape = GetSphereCollisionShape(radius);
-	return CastShapeMultiInternal(sphereShape, FVector::OneVector, FTransform(FQuat::Identity, start), end - start);
+	auto                            sphereShape = GetSphereCollisionShape(radius);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CastShapeMultiInternal_ByLayers(sphereShape, FVector::OneVector, FTransform(FQuat::Identity, start), end - start, {}, {}, ignoredBodiesFilter);
 }
 
-bool UJoltSubsystem::BoxTraceSingle(const FVector& start, const FVector& end, const FVector& halfExtent, const FRotator& orientation, FCastShapeResult& outHit)
+TArray<FCastShapeResult> UJoltSubsystem::SphereTraceMulti_ByLayers(const FVector& start, const FVector& end, float radius, const TArray<FName>& broadPhaseLayers, const TArray<FName>& objectLayers, const TArray<FJoltBodyID>& ignoredBodyIDs)
 {
-	auto boxShape = GetBoxCollisionShape(halfExtent * 2.0f);
-	return CastShapeSingleInternal(boxShape, FVector::OneVector, FTransform(orientation, start), end - start, outHit);
+	auto                            sphereShape = GetSphereCollisionShape(radius);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CastShapeMultiInternal_ByLayers(sphereShape, FVector::OneVector, FTransform(FQuat::Identity, start), end - start, broadPhaseLayers, objectLayers, ignoredBodiesFilter);
 }
 
-TArray<FCastShapeResult> UJoltSubsystem::BoxTraceMulti(const FVector& start, const FVector& end, const FVector& halfExtent, const FRotator& orientation)
+bool UJoltSubsystem::BoxTraceSingle(const FVector& start, const FVector& end, const FVector& halfExtent, const FRotator& orientation, FCastShapeResult& outHit, const TArray<FJoltBodyID>& ignoredBodyIDs)
 {
-	auto boxShape = GetBoxCollisionShape(halfExtent * 2.0f);
-	return CastShapeMultiInternal(boxShape, FVector::OneVector, FTransform(orientation, start), end - start);
+	auto                            boxShape = GetBoxCollisionShape(halfExtent * 2.0f);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CastShapeSingleInternal(boxShape, FVector::OneVector, FTransform(orientation, start), end - start, outHit, ignoredBodiesFilter);
 }
 
-bool UJoltSubsystem::CapsuleTraceSingle(const FVector& start, const FVector& end, float radius, float halfHeight, const FRotator& orientation, FCastShapeResult& outHit)
+TArray<FCastShapeResult> UJoltSubsystem::BoxTraceMulti(const FVector& start, const FVector& end, const FVector& halfExtent, const FRotator& orientation, const TArray<FJoltBodyID>& ignoredBodyIDs)
 {
-	float cylinderHeight = FMath::Max(0.0f, (halfHeight - radius) * 2.0f);
-	auto capsuleShape = GetCapsuleCollisionShape(radius, cylinderHeight);
-	return CastShapeSingleInternal(capsuleShape, FVector::OneVector, FTransform(orientation, start), end - start, outHit);
+	auto                            boxShape = GetBoxCollisionShape(halfExtent * 2.0f);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CastShapeMultiInternal_ByLayers(boxShape, FVector::OneVector, FTransform(orientation, start), end - start, {}, {}, ignoredBodiesFilter);
 }
 
-TArray<FCastShapeResult> UJoltSubsystem::CapsuleTraceMulti(const FVector& start, const FVector& end, float radius, float halfHeight, const FRotator& orientation)
+TArray<FCastShapeResult> UJoltSubsystem::BoxTraceMulti_ByLayers(const FVector& start, const FVector& end, const FVector& halfExtent, const FRotator& orientation, const TArray<FName>& broadPhaseLayers, const TArray<FName>& objectLayers, const TArray<FJoltBodyID>& ignoredBodyIDs)
 {
-	float cylinderHeight = FMath::Max(0.0f, (halfHeight - radius) * 2.0f);
-	auto capsuleShape = GetCapsuleCollisionShape(radius, cylinderHeight);
-	return CastShapeMultiInternal(capsuleShape, FVector::OneVector, FTransform(orientation, start), end - start);
+	auto                            boxShape = GetBoxCollisionShape(halfExtent * 2.0f);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CastShapeMultiInternal_ByLayers(boxShape, FVector::OneVector, FTransform(orientation, start), end - start, broadPhaseLayers, objectLayers, ignoredBodiesFilter);
+}
+
+bool UJoltSubsystem::CapsuleTraceSingle(const FVector& start, const FVector& end, float radius, float halfHeight, const FRotator& orientation, FCastShapeResult& outHit, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	float                           cylinderHeight = FMath::Max(0.0f, (halfHeight - radius) * 2.0f);
+	auto                            capsuleShape = GetCapsuleCollisionShape(radius, cylinderHeight);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CastShapeSingleInternal(capsuleShape, FVector::OneVector, FTransform(orientation, start), end - start, outHit, ignoredBodiesFilter);
+}
+
+TArray<FCastShapeResult> UJoltSubsystem::CapsuleTraceMulti(const FVector& start, const FVector& end, float radius, float halfHeight, const FRotator& orientation, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	float                           cylinderHeight = FMath::Max(0.0f, (halfHeight - radius) * 2.0f);
+	auto                            capsuleShape = GetCapsuleCollisionShape(radius, cylinderHeight);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CastShapeMultiInternal_ByLayers(capsuleShape, FVector::OneVector, FTransform(orientation, start), end - start, {}, {}, ignoredBodiesFilter);
+}
+
+TArray<FCastShapeResult> UJoltSubsystem::CapsuleTraceMulti_ByLayers(const FVector& start, const FVector& end, float radius, float halfHeight, const FRotator& orientation, const TArray<FName>& broadPhaseLayers, const TArray<FName>& objectLayers, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	float                           cylinderHeight = FMath::Max(0.0f, (halfHeight - radius) * 2.0f);
+	auto                            capsuleShape = GetCapsuleCollisionShape(radius, cylinderHeight);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CastShapeMultiInternal_ByLayers(capsuleShape, FVector::OneVector, FTransform(orientation, start), end - start, broadPhaseLayers, objectLayers, ignoredBodiesFilter);
 }
 
 FRaycastResult UJoltSubsystem::RayCastNarrowPhase(
@@ -1456,16 +1675,16 @@ FRaycastResult UJoltSubsystem::RayCastNarrowPhase(
 		return raycastResult;
 	}
 
-	JPH::RayCastSettings	 settings;
-	FVector					 dir = end - start;
-	JPH::RRayCast			 ray{ JoltHelpers::ToJoltPos(start), JoltHelpers::ToJoltVec3(dir) };
+	JPH::RayCastSettings     settings;
+	FVector                  dir = end - start;
+	JPH::RRayCast            ray{ JoltHelpers::ToJoltPos(start), JoltHelpers::ToJoltVec3(dir) };
 	FirstRayCastHitCollector collector(*MainPhysicsSystem, ray);
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(Jolt_RayCastNarrowPhase);
 		MainPhysicsSystem->GetNarrowPhaseQuery().CastRay(
 			ray, settings, collector,
-			BroadPhaseLayersFilter_UE(broadPhaseLayers, LayerTable),
-			ObjectLayersFilter_UE(objectLayers, LayerTable), inBodyFilter, inShapeFilter);
+			BroadPhaseLayersFilter_ForObjects_UE(broadPhaseLayers, LayerTable),
+			ObjectLayersFilter_ForObjects_UE(objectLayers, LayerTable), inBodyFilter, inShapeFilter);
 	}
 
 	if (collector.mHasHit)
@@ -1473,13 +1692,13 @@ FRaycastResult UJoltSubsystem::RayCastNarrowPhase(
 		raycastResult.HitLocation = JoltHelpers::ToUEPos(collector.mContactPosition);
 		raycastResult.HitNormal = JoltHelpers::ToUESize(collector.mContactNormal);
 		raycastResult.bHasHit = collector.mHasHit;
-		raycastResult.HitBodyID = collector.mBodyID.GetIndexAndSequenceNumber();
+		raycastResult.HitBodyID = FJoltBodyID(collector.mBodyID);
 	}
 
 	return raycastResult;
 }
 
-TArray<FRaycastResult> UJoltSubsystem::RayCastBroadPhase(
+TArray<FRaycastResult> UJoltSubsystem::RayCastBroadPhase_ForObjects(
 	const FVector&          start, const FVector& end,
 	const TSet<FName>&      broadPhaseLayers,
 	const TSet<FName>&      objectLayers,
@@ -1494,15 +1713,16 @@ TArray<FRaycastResult> UJoltSubsystem::RayCastBroadPhase(
 		return raycastResults;
 	}
 
-	JPH::RayCastSettings settings;
-	FVector dir = end - start;
-	JPH::RRayCast ray{ JoltHelpers::ToJoltPos(start), JoltHelpers::ToJoltVec3(dir) };
+	JPH::RayCastSettings                                 settings;
+	FVector                                              dir = end - start;
+	JPH::RRayCast                                        ray{ JoltHelpers::ToJoltPos(start), JoltHelpers::ToJoltVec3(dir) };
 	JPH::AllHitCollisionCollector<JPH::CastRayCollector> collector;
 	MainPhysicsSystem->GetNarrowPhaseQuery().CastRay(
-		ray, settings, collector, 
-		BroadPhaseLayersFilter_UE(broadPhaseLayers, LayerTable),
-		ObjectLayersFilter_UE(objectLayers, LayerTable), inBodyFilter, inShapeFilter);
-	
+		ray, settings, collector,
+		BroadPhaseLayersFilter_ForObjects_UE(broadPhaseLayers, LayerTable),
+		ObjectLayersFilter_ForObjects_UE(objectLayers, LayerTable), inBodyFilter, inShapeFilter);
+
+	collector.Sort();
 	raycastResults.Reserve(static_cast<int32>(collector.mHits.size()));
 	for (auto& hit : collector.mHits)
 	{
@@ -1517,21 +1737,69 @@ TArray<FRaycastResult> UJoltSubsystem::RayCastBroadPhase(
 		{
 			continue;
 		}
-		
+
 		if (hit.mFraction > 1.f)
 			continue;
 
 		auto& raycastResult = raycastResults.AddDefaulted_GetRef();
 		raycastResult.bHasHit = true;
-		raycastResult.HitBodyID = hit.mBodyID.GetIndexAndSequenceNumber();
+		raycastResult.HitBodyID = FJoltBodyID(hit.mBodyID);
 		raycastResult.HitLocation = JoltHelpers::ToUEPos(ray.GetPointOnRay(hit.mFraction));
 		raycastResult.HitNormal = JoltHelpers::ToUESize(body.GetWorldSpaceSurfaceNormal(hit.mSubShapeID2, ray.GetPointOnRay(hit.mFraction)));
 	}
 
-	raycastResults.Sort([&start](const FRaycastResult& A, const FRaycastResult& B)
+	return raycastResults;
+}
+
+TArray<FRaycastResult> UJoltSubsystem::RayCastBroadPhase_ByLayers(
+	const FVector&          start, const FVector& end,
+	const TArray<FName>&    broadPhaseLayers,
+	const TArray<FName>&    objectLayers,
+	const JPH::BodyFilter&  inBodyFilter,
+	const JPH::ShapeFilter& inShapeFilter) const
+{
+	TArray<FRaycastResult> raycastResults;
+
+	if (MainPhysicsSystem == nullptr || BodyInterface == nullptr)
 	{
-		return FVector::DistSquared(start, A.HitLocation) < FVector::DistSquared(start, B.HitLocation);
-	});
+		UE_LOG(JoltSubSystemLogs, Error, TEXT("RayCastBroadPhase failed: physics system not initialized"));
+		return raycastResults;
+	}
+
+	JPH::RayCastSettings                                 settings;
+	FVector                                              dir = end - start;
+	JPH::RRayCast                                        ray{ JoltHelpers::ToJoltPos(start), JoltHelpers::ToJoltVec3(dir) };
+	JPH::AllHitCollisionCollector<JPH::CastRayCollector> collector;
+	MainPhysicsSystem->GetNarrowPhaseQuery().CastRay(
+		ray, settings, collector,
+		BroadPhaseLayersFilter_ByLayers_UE(broadPhaseLayers, LayerTable),
+		ObjectLayersFilter_ByLayers_UE(objectLayers, LayerTable), inBodyFilter, inShapeFilter);
+
+	collector.Sort();
+	raycastResults.Reserve(static_cast<int32>(collector.mHits.size()));
+	for (auto& hit : collector.mHits)
+	{
+		JPH::BodyLockRead bodyLock(MainPhysicsSystem->GetBodyLockInterfaceNoLock(), hit.mBodyID);
+		if (!bodyLock.Succeeded())
+		{
+			continue;
+		}
+
+		auto& body = bodyLock.GetBody();
+		if (body.IsSensor())
+		{
+			continue;
+		}
+
+		if (hit.mFraction > 1.f)
+			continue;
+
+		auto& raycastResult = raycastResults.AddDefaulted_GetRef();
+		raycastResult.bHasHit = true;
+		raycastResult.HitBodyID = FJoltBodyID(hit.mBodyID);
+		raycastResult.HitLocation = JoltHelpers::ToUEPos(ray.GetPointOnRay(hit.mFraction));
+		raycastResult.HitNormal = JoltHelpers::ToUESize(body.GetWorldSpaceSurfaceNormal(hit.mSubShapeID2, ray.GetPointOnRay(hit.mFraction)));
+	}
 
 	return raycastResults;
 }
@@ -1573,7 +1841,7 @@ void UJoltSubsystem::LoadLandscapeFromDataAsset()
 
 	for (const FJoltShapeData& shape : *JoltDataAsset->GetAllBodyData())
 	{
-		ShapeDataReader*		shapeDataReader = new ShapeDataReader(shape.BinaryData);
+		ShapeDataReader*        shapeDataReader = new ShapeDataReader(shape.BinaryData);
 		JPH::Shape::ShapeResult result = JPH::Shape::sRestoreFromBinaryState(*shapeDataReader);
 		if (!result.IsValid())
 		{
@@ -1682,18 +1950,9 @@ void UJoltSubsystem::GetAllLandscapeHeights(const ALandscape* landscapeActor)
 		UE_LOG(LogTemp, Log, TEXT("No landscape actor found"));
 		return;
 	}
-	
-	TArray<ULandscapeComponent*> landscapeComponents = landscapeActor->LandscapeComponents;
-	for (TActorIterator<ALandscapeProxy> It(landscapeActor->GetWorld()); It; ++It)
-	{
-		if (!IsValid(*It) || *It == landscapeActor)
-		{
-			continue;
-		}
 
-		landscapeComponents.Append(It->LandscapeComponents);
-	}
-	
+	TArray<ULandscapeComponent*> landscapeComponents = GetLandscapeComponents(landscapeActor);
+
 	if (landscapeComponents.Num() == 0)
 	{
 		UE_LOG(LogTemp, Log, TEXT("No landscape components found"));
@@ -1710,8 +1969,8 @@ void UJoltSubsystem::GetAllLandscapeHeights(const ALandscape* landscapeActor)
 		uint32 ComponentSize = landscapeComponent->ComponentSizeQuads + 1;
 
 		FVector scale = landscapeActor->GetActorTransform().GetScale3D();
-		uint32	arrSize = ComponentSize * ComponentSize;
-		float*	heights = new float[arrSize];
+		uint32  arrSize = ComponentSize * ComponentSize;
+		float*  heights = new float[arrSize];
 		for (uint32 y = 0; y < ComponentSize; ++y)
 		{
 			for (uint32 x = 0; x < ComponentSize; ++x)
@@ -1728,15 +1987,15 @@ void UJoltSubsystem::GetAllLandscapeHeights(const ALandscape* landscapeActor)
 		heightFieldShapeSettigns->AddRef();
 		HeightFieldShapes.Add(heightFieldShapeSettigns);
 
-		FIntPoint sectionBase = landscapeComponent->GetSectionBase();
-		FVector sectionBaseLocal = FVector(sectionBase.X, sectionBase.Y, 0.0f);
+		FIntPoint  sectionBase = landscapeComponent->GetSectionBase();
+		FVector    sectionBaseLocal = FVector(sectionBase.X, sectionBase.Y, 0.0f);
 		FTransform landscapeTransform = landscapeActor->GetActorTransform();
-		FVector sectionBaseWorld = landscapeTransform.TransformPosition(sectionBaseLocal);
-		FQuat landscapeRotation = landscapeTransform.GetRotation();
+		FVector    sectionBaseWorld = landscapeTransform.TransformPosition(sectionBaseLocal);
+		FQuat      landscapeRotation = landscapeTransform.GetRotation();
 
 		FTransform finalTransform = FTransform(landscapeRotation, sectionBaseWorld, FVector::OneVector);
 
-		const JPH::ObjectLayer landscapeLayer = ResolveObjectLayer(JoltSettings->DefaultStaticLayer);
+		const JPH::ObjectLayer landscapeLayer = ResolveObjectLayer(JoltSettings->DefaultLandscapeLayer);
 		if (landscapeLayer == JPH::cObjectLayerInvalid)
 		{
 			delete[] heights;
@@ -1776,7 +2035,7 @@ void UJoltSubsystem::HandleLandscapeMeshes(const ALandscape* LandscapeActor)
 	// ULandscapeSplineSegment::GetLocalMeshComponents() is not exported with LANDSCAPE_API,
 	// So, this hacky way to using reflection works for now 
 	static const FName LocalMeshComponentsName(TEXT("LocalMeshComponents"));
-	FArrayProperty* localMeshesProp = FindFProperty<FArrayProperty>(
+	FArrayProperty*    localMeshesProp = FindFProperty<FArrayProperty>(
 		ULandscapeSplineSegment::StaticClass(), LocalMeshComponentsName);
 	if (localMeshesProp == nullptr)
 	{
@@ -1796,7 +2055,7 @@ void UJoltSubsystem::HandleLandscapeMeshes(const ALandscape* LandscapeActor)
 		FScriptArrayHelper arrayHelper(localMeshesProp, localMeshesProp->ContainerPtrToValuePtr<void>(splineSegment));
 		for (int32 i = 0; i < arrayHelper.Num(); ++i)
 		{
-			UObject* element = *reinterpret_cast<UObject**>(arrayHelper.GetRawPtr(i));
+			UObject*                    element = *reinterpret_cast<UObject**>(arrayHelper.GetRawPtr(i));
 			const USplineMeshComponent* splineMesh = Cast<USplineMeshComponent>(element);
 			if (splineMesh == nullptr || splineMesh->GetBodySetup() == nullptr)
 			{
@@ -1805,6 +2064,21 @@ void UJoltSubsystem::HandleLandscapeMeshes(const ALandscape* LandscapeActor)
 			ExtractSplineMeshGeometry(splineMesh->GetBodySetup(), splineMesh->GetComponentTransform());
 		}
 	}
+}
+
+TArray<ULandscapeComponent*> UJoltSubsystem::GetLandscapeComponents(const ALandscape* landscapeActor)
+{
+	TArray<ULandscapeComponent*> landscapeComponents = landscapeActor->LandscapeComponents;
+	for (TActorIterator<ALandscapeProxy> It(landscapeActor->GetWorld()); It; ++It)
+	{
+		if (!IsValid(*It) || *It == landscapeActor)
+		{
+			continue;
+		}
+
+		landscapeComponents.Append(It->LandscapeComponents);
+	}
+	return landscapeComponents;
 }
 
 void UJoltSubsystem::ExtractSplineMeshGeometry(const UBodySetup* splineMeshBodySetup, const FTransform& splineMeshTransform)
@@ -1871,9 +2145,9 @@ void UJoltSubsystem::DrawDebugLines() const
 }
 #endif
 
-void UJoltSubsystem::JoltSetLinearAndAngularVelocity(const int64& bodyID, const FVector& velocity, const FVector& angularVelocity) const
+void UJoltSubsystem::JoltSetLinearAndAngularVelocity(const FJoltBodyID& bodyID, const FVector& velocity, const FVector& angularVelocity) const
 {
-	GetBodyInterface()->SetLinearAndAngularVelocity(JPH::BodyID(bodyID), JoltHelpers::ToJoltVec3(velocity), JoltHelpers::ToJoltVec3(angularVelocity));
+	GetBodyInterface()->SetLinearAndAngularVelocity(bodyID.ToJoltBodyID(), JoltHelpers::ToJoltVec3(velocity), JoltHelpers::ToJoltVec3(angularVelocity));
 }
 
 void UJoltSubsystem::JoltSetLinearAndAngularVelocity(const JPH::BodyID& bodyID, const FVector& velocity, const FVector& angularVelocity) const
@@ -1881,12 +2155,13 @@ void UJoltSubsystem::JoltSetLinearAndAngularVelocity(const JPH::BodyID& bodyID, 
 	GetBodyInterface()->SetLinearAndAngularVelocity(bodyID, JoltHelpers::ToJoltVec3(velocity), JoltHelpers::ToJoltVec3(angularVelocity));
 }
 
-void UJoltSubsystem::JoltGetPhysicsState(const int64& bodyID, FTransform& transform, FTransform& transformCOM, FVector& velocity, FVector& angularVelocity) const
+void UJoltSubsystem::JoltGetPhysicsState(const FJoltBodyID& bodyID, FTransform& transform, FTransform& transformCOM, FVector& velocity, FVector& angularVelocity) const
 {
-	transform = JoltHelpers::ToUETransform(GetBodyInterface()->GetWorldTransform(JPH::BodyID(bodyID)));
-	transformCOM = JoltHelpers::ToUETransform(GetBodyInterface()->GetCenterOfMassTransform(JPH::BodyID(bodyID)));
-	velocity = JoltHelpers::ToUESize(GetBodyInterface()->GetLinearVelocity(JPH::BodyID(bodyID)));
-	angularVelocity = JoltHelpers::ToUESize(GetBodyInterface()->GetAngularVelocity(JPH::BodyID(bodyID)));
+	const JPH::BodyID JoltBodyID = bodyID.ToJoltBodyID();
+	transform = JoltHelpers::ToUETransform(GetBodyInterface()->GetWorldTransform(JoltBodyID));
+	transformCOM = JoltHelpers::ToUETransform(GetBodyInterface()->GetCenterOfMassTransform(JoltBodyID));
+	velocity = JoltHelpers::ToUESize(GetBodyInterface()->GetLinearVelocity(JoltBodyID));
+	angularVelocity = JoltHelpers::ToUESize(GetBodyInterface()->GetAngularVelocity(JoltBodyID));
 }
 
 void UJoltSubsystem::JoltGetPhysicsState(const JPH::BodyID& bodyID, FTransform& transform, FTransform& transformCOM, FVector& velocity, FVector& angularVelocity) const
@@ -1897,9 +2172,9 @@ void UJoltSubsystem::JoltGetPhysicsState(const JPH::BodyID& bodyID, FTransform& 
 	angularVelocity = JoltHelpers::ToUESize(GetBodyInterface()->GetAngularVelocity(bodyID));
 }
 
-void UJoltSubsystem::JoltGetPhysicsTransform(const int64& bodyID, FTransform& transform) const
+void UJoltSubsystem::JoltGetPhysicsTransform(const FJoltBodyID& bodyID, FTransform& transform) const
 {
-	transform = JoltHelpers::ToUETransform(GetBodyInterface()->GetWorldTransform(JPH::BodyID(bodyID)));
+	transform = JoltHelpers::ToUETransform(GetBodyInterface()->GetWorldTransform(bodyID.ToJoltBodyID()));
 }
 
 void UJoltSubsystem::JoltGetPhysicsTransform(const JPH::BodyID& bodyID, FTransform& transform) const
@@ -1912,9 +2187,9 @@ void UJoltSubsystem::JoltAddCentralImpulse(const JPH::BodyID& bodyID, const FVec
 	GetBodyInterface()->AddImpulse(bodyID, JoltHelpers::ToJoltVec3(impulse));
 }
 
-void UJoltSubsystem::JoltAddCentralImpulse(const int64& bodyID, const FVector& impulse) const
+void UJoltSubsystem::JoltAddCentralImpulse(const FJoltBodyID& bodyID, const FVector& impulse) const
 {
-	GetBodyInterface()->AddImpulse(JPH::BodyID(bodyID), JoltHelpers::ToJoltVec3(impulse));
+	GetBodyInterface()->AddImpulse(bodyID.ToJoltBodyID(), JoltHelpers::ToJoltVec3(impulse));
 }
 
 void UJoltSubsystem::JoltAddTorque(const JPH::BodyID& bodyID, const FVector& torque) const
@@ -1922,9 +2197,9 @@ void UJoltSubsystem::JoltAddTorque(const JPH::BodyID& bodyID, const FVector& tor
 	GetBodyInterface()->AddTorque(bodyID, JoltHelpers::ToJoltVec3(torque));
 }
 
-void UJoltSubsystem::JoltAddTorque(const int64& bodyID, const FVector& torque) const
+void UJoltSubsystem::JoltAddTorque(const FJoltBodyID& bodyID, const FVector& torque) const
 {
-	GetBodyInterface()->AddTorque(JPH::BodyID(bodyID), JoltHelpers::ToJoltVec3(torque));
+	GetBodyInterface()->AddTorque(bodyID.ToJoltBodyID(), JoltHelpers::ToJoltVec3(torque));
 }
 
 void UJoltSubsystem::JoltAddForce(const JPH::BodyID& bodyID, const FVector& torque) const
@@ -1932,14 +2207,14 @@ void UJoltSubsystem::JoltAddForce(const JPH::BodyID& bodyID, const FVector& torq
 	GetBodyInterface()->AddForce(bodyID, JoltHelpers::ToJoltVec3(torque));
 }
 
-void UJoltSubsystem::JoltAddForce(const int64& bodyID, const FVector& torque) const
+void UJoltSubsystem::JoltAddForce(const FJoltBodyID& bodyID, const FVector& torque) const
 {
-	GetBodyInterface()->AddForce(JPH::BodyID(bodyID), JoltHelpers::ToJoltVec3(torque));
+	GetBodyInterface()->AddForce(bodyID.ToJoltBodyID(), JoltHelpers::ToJoltVec3(torque));
 }
 
-void UJoltSubsystem::JoltAddImpulseAtLocation(const int64& BodyID, const FVector& impulse, const FVector& locationWS) const
+void UJoltSubsystem::JoltAddImpulseAtLocation(const FJoltBodyID& BodyID, const FVector& impulse, const FVector& locationWS) const
 {
-	GetBodyInterface()->AddImpulse(JPH::BodyID(BodyID), JoltHelpers::ToJoltVec3(impulse), JoltHelpers::ToJoltPos(locationWS));
+	GetBodyInterface()->AddImpulse(BodyID.ToJoltBodyID(), JoltHelpers::ToJoltVec3(impulse), JoltHelpers::ToJoltPos(locationWS));
 }
 
 void UJoltSubsystem::JoltAddImpulseAtLocation(const JPH::BodyID& bodyID, const FVector& impulse, const FVector& locationWS) const
@@ -1952,14 +2227,14 @@ void UJoltSubsystem::JoltAddForceAtLocation(const JPH::BodyID& bodyID, const FVe
 	GetBodyInterface()->AddForce(bodyID, JoltHelpers::ToJoltVec3(force), JoltHelpers::ToJoltPos(locationWS));
 }
 
-void UJoltSubsystem::JoltAddForceAtLocation(const int64& bodyID, const FVector& force, const FVector& locationWS) const
+void UJoltSubsystem::JoltAddForceAtLocation(const FJoltBodyID& bodyID, const FVector& force, const FVector& locationWS) const
 {
-	GetBodyInterface()->AddForce(JPH::BodyID(bodyID), JoltHelpers::ToJoltVec3(force), JoltHelpers::ToJoltPos(locationWS));
+	GetBodyInterface()->AddForce(bodyID.ToJoltBodyID(), JoltHelpers::ToJoltVec3(force), JoltHelpers::ToJoltPos(locationWS));
 }
 
-FVector UJoltSubsystem::JoltGetVelocityAt(const int64& bodyID, const FVector& locationWS) const
+FVector UJoltSubsystem::JoltGetVelocityAt(const FJoltBodyID& bodyID, const FVector& locationWS) const
 {
-	return JoltHelpers::ToUESize(GetBodyInterface()->GetPointVelocity(JPH::BodyID(bodyID), JoltHelpers::ToJoltPos(locationWS)));
+	return JoltHelpers::ToUESize(GetBodyInterface()->GetPointVelocity(bodyID.ToJoltBodyID(), JoltHelpers::ToJoltPos(locationWS)));
 }
 
 FVector UJoltSubsystem::JoltGetVelocityAt(const JPH::BodyID& bodyID, const FVector& locationWS) const
@@ -1967,14 +2242,14 @@ FVector UJoltSubsystem::JoltGetVelocityAt(const JPH::BodyID& bodyID, const FVect
 	return JoltHelpers::ToUESize(GetBodyInterface()->GetPointVelocity(bodyID, JoltHelpers::ToJoltPos(locationWS)));
 }
 
-void UJoltSubsystem::JoltSetPhysicsLocationAndRotation(const int32& bodyID, const FVector& locationWS, const FQuat& rotationWS) const
+void UJoltSubsystem::JoltSetPhysicsLocationAndRotation(const FJoltBodyID& bodyID, const FVector& locationWS, const FQuat& rotationWS) const
 {
-	GetBodyInterface()->SetPositionAndRotation(JPH::BodyID(bodyID), JoltHelpers::ToJoltPos(locationWS), JoltHelpers::ToJoltRot(rotationWS), JPH::EActivation::Activate);
+	GetBodyInterface()->SetPositionAndRotation(bodyID.ToJoltBodyID(), JoltHelpers::ToJoltPos(locationWS), JoltHelpers::ToJoltRot(rotationWS), JPH::EActivation::Activate);
 }
 
-void UJoltSubsystem::JoltSetPhysicsLocationRotationAndVelocity(const int32& bodyID, const FVector& locationWS, const FQuat& rotationWS, const FVector& linearVelocity, const FVector& angularVelocity) const
+void UJoltSubsystem::JoltSetPhysicsLocationRotationAndVelocity(const FJoltBodyID& bodyID, const FVector& locationWS, const FQuat& rotationWS, const FVector& linearVelocity, const FVector& angularVelocity) const
 {
-	GetBodyInterface()->SetPositionRotationAndVelocity(JPH::BodyID(bodyID), JoltHelpers::ToJoltPos(locationWS), JoltHelpers::ToJoltRot(rotationWS), JoltHelpers::ToJoltVec3(linearVelocity), JoltHelpers::ToJoltVec3(angularVelocity));
+	GetBodyInterface()->SetPositionRotationAndVelocity(bodyID.ToJoltBodyID(), JoltHelpers::ToJoltPos(locationWS), JoltHelpers::ToJoltRot(rotationWS), JoltHelpers::ToJoltVec3(linearVelocity), JoltHelpers::ToJoltVec3(angularVelocity));
 }
 
 void UJoltSubsystem::JoltSetPhysicsLocationAndRotation(const JPH::BodyID& bodyID, const FVector& locationWS, const FQuat& rotationWS) const
@@ -1982,9 +2257,9 @@ void UJoltSubsystem::JoltSetPhysicsLocationAndRotation(const JPH::BodyID& bodyID
 	GetBodyInterface()->SetPositionAndRotation(bodyID, JoltHelpers::ToJoltPos(locationWS), JoltHelpers::ToJoltRot(rotationWS), JPH::EActivation::Activate);
 }
 
-void UJoltSubsystem::JoltSetLinearVelocity(const int& bodyID, const FVector& velocity) const
+void UJoltSubsystem::JoltSetLinearVelocity(const FJoltBodyID& bodyID, const FVector& velocity) const
 {
-	GetBodyInterface()->SetLinearVelocity(JPH::BodyID(bodyID), JoltHelpers::ToJoltVec3(velocity));
+	GetBodyInterface()->SetLinearVelocity(bodyID.ToJoltBodyID(), JoltHelpers::ToJoltVec3(velocity));
 }
 
 void UJoltSubsystem::JoltSetLinearVelocity(const JPH::BodyID& bodyID, const FVector& velocity) const
@@ -1992,9 +2267,9 @@ void UJoltSubsystem::JoltSetLinearVelocity(const JPH::BodyID& bodyID, const FVec
 	GetBodyInterface()->SetLinearVelocity(bodyID, JoltHelpers::ToJoltVec3(velocity));
 }
 
-void UJoltSubsystem::JoltSetPhysicsLocation(const int& bodyID, const FVector& locationWS) const
+void UJoltSubsystem::JoltSetPhysicsLocation(const FJoltBodyID& bodyID, const FVector& locationWS) const
 {
-	GetBodyInterface()->SetPosition(JPH::BodyID(bodyID), JoltHelpers::ToJoltPos(locationWS), JPH::EActivation::Activate);
+	GetBodyInterface()->SetPosition(bodyID.ToJoltBodyID(), JoltHelpers::ToJoltPos(locationWS), JPH::EActivation::Activate);
 }
 
 void UJoltSubsystem::JoltSetPhysicsLocation(const JPH::BodyID& bodyID, const FVector& locationWS) const
@@ -2007,14 +2282,14 @@ void UJoltSubsystem::JoltSetPhysicsRotation(const JPH::BodyID& bodyID, const FQu
 	GetBodyInterface()->SetRotation(bodyID, JoltHelpers::ToJoltRot(rotationWS), JPH::EActivation::Activate);
 }
 
-void UJoltSubsystem::JoltSetPhysicsRotation(const int64& bodyID, const FQuat& rotationWS) const
+void UJoltSubsystem::JoltSetPhysicsRotation(const FJoltBodyID& bodyID, const FQuat& rotationWS) const
 {
-	GetBodyInterface()->SetRotation(JPH::BodyID(bodyID), JoltHelpers::ToJoltRot(rotationWS), JPH::EActivation::Activate);
+	GetBodyInterface()->SetRotation(bodyID.ToJoltBodyID(), JoltHelpers::ToJoltRot(rotationWS), JPH::EActivation::Activate);
 }
 
-void UJoltSubsystem::JoltMoveKinematic(const int64& bodyID, const FVector& locationWS, const FQuat& rotationWS, float DeltaTime) const
+void UJoltSubsystem::JoltMoveKinematic(const FJoltBodyID& bodyID, const FVector& locationWS, const FQuat& rotationWS, float DeltaTime) const
 {
-	GetBodyInterface()->MoveKinematic(JPH::BodyID(bodyID), JoltHelpers::ToJoltPos(locationWS), JoltHelpers::ToJoltRot(rotationWS), DeltaTime);
+	GetBodyInterface()->MoveKinematic(bodyID.ToJoltBodyID(), JoltHelpers::ToJoltPos(locationWS), JoltHelpers::ToJoltRot(rotationWS), DeltaTime);
 }
 
 
@@ -2048,3 +2323,27 @@ JPH::ObjectLayer UJoltSubsystem::ResolveObjectLayer(FName LayerName, JPH::Object
 	return static_cast<JPH::ObjectLayer>(*idx);
 }
 
+void UJoltSubsystem::DrawDebugShapeComponent(
+	const UShapeComponent* shapeComponent, const FTransform& Transform, FColor    Color,
+	float                  LifeTime, uint8                   DepthPriority, float Thickness) const
+{
+	if (auto Sphere = Cast<USphereComponent>(shapeComponent))
+	{
+		DrawDebugSphere(
+			GetWorld(), Transform.GetLocation(), Sphere->GetScaledSphereRadius(), 16, Color, false, LifeTime, DepthPriority, Thickness);
+	}
+	else if (auto Box = Cast<UBoxComponent>(shapeComponent))
+	{
+		DrawDebugBox(
+			GetWorld(), Transform.GetLocation(), Box->GetScaledBoxExtent(), Transform.GetRotation(), Color, false, LifeTime, DepthPriority, Thickness);
+	}
+	else if (auto Capsule = Cast<UCapsuleComponent>(shapeComponent))
+	{
+		DrawDebugCapsule(
+			GetWorld(), Transform.GetLocation(), Capsule->GetScaledCapsuleHalfHeight(), Capsule->GetScaledCapsuleRadius(), Transform.GetRotation(), Color, false, LifeTime, DepthPriority, Thickness);
+	}
+	else
+	{
+		UE_LOG(JoltSubSystemLogs, Warning, TEXT("DrawDebugShapeComponent: unsupported shape component type %s"), *shapeComponent->GetClass()->GetName());
+	}
+}

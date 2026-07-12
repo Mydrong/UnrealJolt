@@ -55,8 +55,8 @@ void ATestJoltPhysicsActor::SpawnCapsules()
 		CapsuleComponent->SetRelativeLocation(-CapsuleStaticMesh->GetBounds().Origin);
 		CapsuleComponent->RegisterComponent();
 
-		int64 BodyId = JoltSubsystem->AddDynamicBody(CapsuleActor, Friction, Restitution, Mass);
-		if (BodyId == 0)
+		auto BodyId = JoltSubsystem->AddDynamicBody(CapsuleActor, Friction, Restitution, Mass);
+		if (BodyId.IsValid())
 			CapsuleActor->Destroy();
 	}
 }

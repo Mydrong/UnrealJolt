@@ -44,6 +44,7 @@ void FJoltWorker::StepPhysicsWithCallBacks()
 
 	StepPhysics();
 
+	TRACE_CPUPROFILER_EVENT_SCOPE(FJoltWorker_PostPhysicsCallbacks);
 	for (const TDelegate<void(float)>& postCallback : PostPhysicsCallbacks)
 	{
 		if (postCallback.IsBound())

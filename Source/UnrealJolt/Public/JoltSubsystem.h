@@ -1,5 +1,7 @@
 #pragma once
 
+#include "JoltBodyID.h"
+#include "JoltCharacter.h"
 #include "Containers/Array.h"
 #include "Containers/Map.h"
 #include "GenericPlatform/GenericPlatformMisc.h"
@@ -15,7 +17,7 @@
 #include "UObject/ObjectMacros.h"
 
 #ifdef JPH_DEBUG_RENDERER
-	#include "JoltDebugRenderer.h"
+#include "JoltDebugRenderer.h"
 #endif
 
 #include "JoltSubsystem.generated.h"
@@ -43,15 +45,15 @@ struct FRaycastResult
 	UPROPERTY(BlueprintReadOnly, Category = "Jolt Physics")
 	bool bHasHit = false;
 
-	uint32 HitBodyID;
+	FJoltBodyID HitBodyID;
 };
 
 struct FFrameHistory
 {
-	FVector PrevLocation;
+	FVector  PrevLocation;
 	FRotator PrevRotation;
-	
-	FVector CurrentLocation;
+
+	FVector  CurrentLocation;
 	FRotator CurrentRotation;
 };
 
@@ -60,27 +62,33 @@ struct FCastShapeResult
 {
 	GENERATED_USTRUCT_BODY()
 
-	uint32 ContactBodyID;
+	FJoltBodyID ContactBodyID;
+	
+	FVector LocationShape;
 
-	FVector ContactLocationFoundShape;
+	FVector ContactPointOn2;
 
-	FVector ContactLocationCastedShape;
+	FVector ContactPointOn1;
+
+	/** Fraction of the sweep where the hit occurred (0 = at start, 1 = at end). Negative or 0 indicates initial penetration. */
+	float Fraction = 1.0f;
 };
 
 struct FJoltBodyActor
 {
-	FJoltBodyActor(const JPH::BodyID* JoltBodyID, const TWeakObjectPtr<AActor>& Actor)
-		: JoltBodyID(JoltBodyID), Actor(Actor) {}
+	FJoltBodyActor(const JPH::BodyID JoltBodyID, const TWeakObjectPtr<AActor>& Actor)
+		: JoltBodyID(JoltBodyID)
+		, Actor(Actor) {}
 
-	const JPH::BodyID* JoltBodyID;
+	const JPH::BodyID      JoltBodyID;
 	TWeakObjectPtr<AActor> Actor;
-	FFrameHistory FrameHistory;
-};	
+	FFrameHistory          FrameHistory;
+};
 
 struct FExtractedShape
 {
 	JPH::RefConst<JPH::Shape> Shape;
-	FTransform        WorldTransform;
+	FTransform                WorldTransform;
 };
 
 typedef const std::function<void(const FVector&, const FVector&, const bool&, const uint32&, const UPhysicalMaterial*)> NarrowPhaseQueryCallback;
@@ -94,32 +102,38 @@ class UNREALJOLT_API UJoltSubsystem : public UTickableWorldSubsystem
 
 public:
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", meta = (AdvancedDisplay = "Layer"))
-	int64 AddDynamicBody(AActor* Actor, const float& friction, const float& restitution, const float& mass, FName Layer = NAME_None);
-	
+	FJoltBodyID AddDynamicBody(AActor* Actor, const float& friction, const float& restitution, const float& mass, FName Layer = NAME_None);
+
 	/// Creates a new dynamic body from a UE FKAggregateGeom and returns its newly allocated BodyID.
 	///
 	/// Will update actor position/rotation if provided.
-	int64 AddDynamicShapes(
-		AActor* actor,
+	FJoltBodyID AddDynamicShapes(
+		AActor*                actor,
 		const FKAggregateGeom& aggregateGeom,
-		const FTransform& initialWorldTransform,
-		float friction, float restitution, float mass,
-		FName layerName = NAME_None);
-	
+		const FTransform&      initialWorldTransform,
+		float                  friction, float restitution, float mass,
+		FName                  layerName = NAME_None);
+
 	/*
 	 * Adds a static body to the jolt physics system.
 	 * The other way is to just add 'jolt-static' tag to the actor
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", meta = (AdvancedDisplay = "Layer"))
-	int64 AddStaticBody(const AActor* body, const float& friction, const float& restitution, FName Layer = NAME_None);
+	FJoltBodyID AddStaticBody(const AActor* body, const float& friction, const float& restitution, FName Layer = NAME_None);
 
-	int64 AddStaticShapes(const FKAggregateGeom& AggregateGeom, const FTransform& worldTransform, const float& friction, const float& restitution, FName Layer = NAME_None);
-	
+	FJoltBodyID AddStaticShapes(const FKAggregateGeom& AggregateGeom, const FTransform& worldTransform, const float& friction, const float& restitution, FName Layer = NAME_None);
+
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", meta = (AdvancedDisplay = "Layer"))
-	int64 AddMeshShape(
-		const TArray<FVector>& vertices, const TArray<int32>& indices, const FTransform& worldTransform, 
-		bool bDynamic, float friction, float restitution, float Mass, FName Layer = NAME_None);
-	
+	FJoltBodyID AddMeshShape(
+		const TArray<FVector>& vertices, const TArray<int32>& indices, const FTransform& worldTransform,
+		bool                   bDynamic, float                friction, float            restitution, float Mass, FName Layer = NAME_None);
+
+	TArray<JPH::Ref<FJoltCharacter>> JoltCharacters;
+	FJoltCharacter*                  CreateCharacter(
+		const FVector& Location, const FRotator&  Rotation, float      HalfHeight, float Radius,
+		float          MaxPenetrationDepth, float MaxSlopeAngle, FName Layer);
+
+
 	/*
 	 * Layer lookup. Returns INDEX_NONE if the name isn't a configured object layer.
 	 * Use when gameplay code needs the raw id for a custom body creation path.
@@ -142,6 +156,8 @@ public:
 		return ResolveObjectLayer(LayerName.IsNone() ? JoltSettings->DefaultStaticLayer : LayerName);
 	}
 
+	FName GetLayerName(JPH::ObjectLayer Layer) const;
+
 	// Read-only access to the runtime layer table (valid after Initialize / before Deinitialize).
 	const FJoltLayerTable& GetLayerTable() const { return LayerTable; }
 
@@ -160,9 +176,21 @@ public:
 
 	/*
 	 * Used to check a collision by placing the shape at a static location
+	 * 
+	 * Returns bodies whose layer is in the given sets of layers.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
-	TArray<int32> CollideShape(const UShapeComponent* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& offset);
+	TArray<int32> CollideShape(
+		const UShapeComponent* shape, const FTransform&             shapeCOM,
+		const TSet<FName>&     broadPhaseLayers, const TSet<FName>& objectLayers);
+
+	/// Used to check a collision by placing the shape at a static location
+	/// 
+	/// Returns bodies that collide with the given layers.
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	TArray<int32> CollideShape_ByLayers(
+		const UShapeComponent* shape, const FTransform&               shapeCOM,
+		const TArray<FName>&   broadPhaseLayers, const TArray<FName>& objectLayers);
 
 	/*
 	 * Sweep a shape to detect collision
@@ -172,22 +200,58 @@ public:
 
 	// UE-style primitive sweeps that don't require a shape component.
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
-	bool SphereTraceSingle(const FVector& start, const FVector& end, float radius, FCastShapeResult& outHit);
+	bool SphereTraceSingle(
+		const FVector&             start, const FVector& end, float radius, FCastShapeResult& outHit,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
-	TArray<FCastShapeResult> SphereTraceMulti(const FVector& start, const FVector& end, float radius);
+	TArray<FCastShapeResult> SphereTraceMulti(
+		const FVector&             start, const FVector& end, float radius,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
-	bool BoxTraceSingle(const FVector& start, const FVector& end, const FVector& halfExtent, const FRotator& orientation, FCastShapeResult& outHit);
+	TArray<FCastShapeResult> SphereTraceMulti_ByLayers(
+		const FVector&             start, const FVector&                  end, float radius,
+		const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
-	TArray<FCastShapeResult> BoxTraceMulti(const FVector& start, const FVector& end, const FVector& halfExtent, const FRotator& orientation);
+	bool BoxTraceSingle(
+		const FVector&             start, const FVector& end, const FVector& halfExtent, const FRotator& orientation, FCastShapeResult& outHit,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
-	bool CapsuleTraceSingle(const FVector& start, const FVector& end, float radius, float halfHeight, const FRotator& orientation, FCastShapeResult& outHit);
+	TArray<FCastShapeResult> BoxTraceMulti(
+		const FVector&             start, const FVector& end, const FVector& halfExtent, const FRotator& orientation,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
-	TArray<FCastShapeResult> CapsuleTraceMulti(const FVector& start, const FVector& end, float radius, float halfHeight, const FRotator& orientation);
+	TArray<FCastShapeResult> BoxTraceMulti_ByLayers(
+		const FVector&             start, const FVector&                  end, const FVector& halfExtent, const FRotator& orientation,
+		const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	bool CapsuleTraceSingle(
+		const FVector&             start, const FVector& end, float radius, float halfHeight, const FRotator& orientation, FCastShapeResult& outHit,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	TArray<FCastShapeResult> CapsuleTraceMulti(
+		const FVector&             start, const FVector& end, float radius, float halfHeight, const FRotator& orientation,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	TArray<FCastShapeResult> CapsuleTraceMulti_ByLayers(
+		const FVector&             start, const FVector&                  end, float radius, float halfHeight, const FRotator& orientation,
+		const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	bool CastShapeSingle(
+		const JPH::Shape*      inShape, const FVector&    inShapeScale,
+		const FTransform&      inShapeCOM, const FVector& inDirection,
+		FCastShapeResult&      outHit,
+		const JPH::BodyFilter& inBodyFilter) const;
 
 	/*
 	 * Fetch the centre of mass of the body
@@ -220,55 +284,55 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
 	int GetTickRate() { return JoltSettings->TickRate; };
 
-#if WITH_EDITOR
+	#if WITH_EDITOR
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
 	void ExtractSplineMeshGeometry(const UBodySetup* splineMeshBodySetup, const FTransform& splineMeshTransform);
-#endif
+	#endif
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
-	void JoltSetLinearAndAngularVelocity(const int64& bodyID, const FVector& velocity, const FVector& angularVelocity) const;
+	void JoltSetLinearAndAngularVelocity(const FJoltBodyID& bodyID, const FVector& velocity, const FVector& angularVelocity) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
-	void JoltGetPhysicsState(const int64& bodyID, FTransform& transform, FTransform& transformCOM, FVector& velocity, FVector& angularVelocity) const;
+	void JoltGetPhysicsState(const FJoltBodyID& bodyID, FTransform& transform, FTransform& transformCOM, FVector& velocity, FVector& angularVelocity) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
-	void JoltAddCentralImpulse(const int64& bodyID, const FVector& impulse) const;
+	void JoltAddCentralImpulse(const FJoltBodyID& bodyID, const FVector& impulse) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
-	void JoltAddTorque(const int64& bodyID, const FVector& torque) const;
+	void JoltAddTorque(const FJoltBodyID& bodyID, const FVector& torque) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
-	void JoltAddForce(const int64& bodyID, const FVector& force) const;
+	void JoltAddForce(const FJoltBodyID& bodyID, const FVector& force) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
-	void JoltAddImpulseAtLocation(const int64& bodyID, const FVector& impulse, const FVector& locationWS) const;
+	void JoltAddImpulseAtLocation(const FJoltBodyID& bodyID, const FVector& impulse, const FVector& locationWS) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
-	void JoltAddForceAtLocation(const int64& bodyID, const FVector& force, const FVector& locationWS) const;
+	void JoltAddForceAtLocation(const FJoltBodyID& bodyID, const FVector& force, const FVector& locationWS) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
-	FVector JoltGetVelocityAt(const int64& bodyID, const FVector& locationWS) const;
+	FVector JoltGetVelocityAt(const FJoltBodyID& bodyID, const FVector& locationWS) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
-	void JoltSetPhysicsLocationAndRotation(const int32& bodyID, const FVector& locationWS, const FQuat& rotationWS) const;
-	
-	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
-	void JoltSetPhysicsLocationRotationAndVelocity(const int32& bodyID, const FVector& locationWS, const FQuat& rotationWS, const FVector& linearVelocity, const FVector& angularVelocity) const;
-	
-	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
-	void JoltSetLinearVelocity(const int& bodyID, const FVector& velocity) const;
+	void JoltSetPhysicsLocationAndRotation(const FJoltBodyID& bodyID, const FVector& locationWS, const FQuat& rotationWS) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
-	void JoltSetPhysicsLocation(const int& bodyID, const FVector& locationWS) const;
+	void JoltSetPhysicsLocationRotationAndVelocity(const FJoltBodyID& bodyID, const FVector& locationWS, const FQuat& rotationWS, const FVector& linearVelocity, const FVector& angularVelocity) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
-	void JoltSetPhysicsRotation(const int64& bodyID, const FQuat& rotationWS) const;
-	
-	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
-	void JoltMoveKinematic(const int64& bodyID, const FVector& locationWS, const FQuat& rotationWS, float DeltaTime) const;
+	void JoltSetLinearVelocity(const FJoltBodyID& bodyID, const FVector& velocity) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
-	void JoltGetPhysicsTransform(const int64& bodyID, FTransform& transform) const;
+	void JoltSetPhysicsLocation(const FJoltBodyID& bodyID, const FVector& locationWS) const;
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
+	void JoltSetPhysicsRotation(const FJoltBodyID& bodyID, const FQuat& rotationWS) const;
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
+	void JoltMoveKinematic(const FJoltBodyID& bodyID, const FVector& locationWS, const FQuat& rotationWS, float DeltaTime) const;
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", BlueprintPure = false)
+	void JoltGetPhysicsTransform(const FJoltBodyID& bodyID, FTransform& transform) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
 	void SetTimeScale(double deltaTime);
@@ -312,11 +376,23 @@ public:
 		const JPH::BodyFilter&  inBodyFilter = {},
 		const JPH::ShapeFilter& inShapeFilter = {}) const;
 
-	// Same as RayCastNarrowPhase but returns all hits along the ray, sorted by distance.
-	TArray<FRaycastResult> RayCastBroadPhase(
+	/// Same as RayCastNarrowPhase but returns all hits along the ray, sorted by distance.
+	/// 
+	/// Returns bodies with layers in the given sets of layers.
+	TArray<FRaycastResult> RayCastBroadPhase_ForObjects(
 		const FVector&          start, const FVector& end,
 		const TSet<FName>&      broadPhaseLayers = {},
 		const TSet<FName>&      objectLayers = {},
+		const JPH::BodyFilter&  inBodyFilter = {},
+		const JPH::ShapeFilter& inShapeFilter = {}) const;
+
+	/// Same as RayCastNarrowPhase but returns all hits along the ray, sorted by distance.
+	/// 
+	/// Returns bodies that collide with the given layers.
+	TArray<FRaycastResult> RayCastBroadPhase_ByLayers(
+		const FVector&          start, const FVector& end,
+		const TArray<FName>&    broadPhaseLayers = {},
+		const TArray<FName>&    objectLayers = {},
 		const JPH::BodyFilter&  inBodyFilter = {},
 		const JPH::ShapeFilter& inShapeFilter = {}) const;
 
@@ -344,14 +420,14 @@ public:
 	void StepPhysics(bool bWithCallbacks = true);
 
 	// Ad hoc debug draw wrappers routed through the Jolt debug renderer when available.
-	void DrawDebugSphere(const FVector& Center, float Radius, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
-	void DrawDebugBox(const FVector& Center, const FVector& Extent, const FQuat& Rotation, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
-	void DrawDebugTriangle(const FVector& V1, const FVector& V2, const FVector& V3, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
-	void DrawDebugCapsule(const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
-	void DrawDebugCylinder(const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
-	void DrawDebugConvexHull(const TArray<FVector>& Points, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
-	void DrawDebugMesh(const TArray<FVector>& Vertices, const TArray<uint32>& Indices, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
-	void DrawDebugPlane(const FVector& Center, const FVector& Normal, float Size, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
+	void JoltDrawDebugSphere(const FVector& Center, float Radius, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
+	void JoltDrawDebugBox(const FVector& Center, const FVector& Extent, const FQuat& Rotation, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
+	void JoltDrawDebugTriangle(const FVector& V1, const FVector& V2, const FVector& V3, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
+	void JoltDrawDebugCapsule(const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
+	void JoltDrawDebugCylinder(const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
+	void JoltDrawDebugConvexHull(const TArray<FVector>& Points, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
+	void JoltDrawDebugMesh(const TArray<FVector>& Vertices, const TArray<uint32>& Indices, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
+	void JoltDrawDebugPlane(const FVector& Center, const FVector& Normal, float Size, const FColor& Color, bool bPersistent = false, float LifeTime = -1.0f) const;
 
 	// --- Public external-owner API ---
 	// Stable contract for plugins that drive their own physics state on top
@@ -362,14 +438,16 @@ public:
 		const JPH::BodyID& bodyID,
 		const JPH::Shape*  shape,
 		const FTransform&  initialWorldTransform,
-		float friction, float restitution, float mass,
-		FName layerName = NAME_None);
+		float              friction, float restitution, float mass,
+		FName              layerName = NAME_None);
 
 	// Mirror of AddDynamicBodyForExternalOwner: removes and destroys the body
 	// in Jolt AND drops the BodyIDBodyMap entry. 
-	void RemoveBodyForExternalOwner(int64 bodyID);
+	void RemoveBodyForExternalOwner(const FJoltBodyID& bodyID);
 
-private:
+	void AddActorBodyMapping(const JPH::BodyID& bodyID, const TWeakObjectPtr<AActor>& actor);
+
+protected:
 	const JoltPhysicsMaterial* GetJoltPhysicsMaterial(const UPhysicalMaterial* UEPhysicsMat);
 
 	const UPhysicalMaterial* GetUEPhysicsMaterial(const JoltPhysicsMaterial* JoltPhysicsMat) const;
@@ -396,7 +474,7 @@ private:
 
 	const JPH::BodyID* AddBodyToSimulation(const JPH::BodyID* bodyID, const JPH::BodyCreationSettings& shapeSettings, float friction, float restitution);
 
-	JPH::Body* GetBody(uint32 bodyID) const { return BodyIDBodyMap[bodyID]; }
+	JPH::Body* GetBody(const FJoltBodyID& bodyID) const { return BodyIDBodyMap[bodyID]; }
 
 	UPROPERTY()
 	UJoltDataAsset* JoltDataAsset = nullptr;
@@ -442,7 +520,7 @@ private:
 
 	TArray<JPH::Body*> SavedBodies;
 
-	TMap<uint32, JPH::Body*> BodyIDBodyMap;
+	TMap<FJoltBodyID, JPH::Body*> BodyIDBodyMap;
 
 	// JPH::Array<const JPH::Body*> HeightMapArray;
 
@@ -456,7 +534,7 @@ private:
 
 	TArray<const JPH::ConvexHullShape*> ConvexShapes;
 
-#ifdef JPH_DEBUG_RENDERER
+	#ifdef JPH_DEBUG_RENDERER
 	UEJoltDebugRenderer* JoltDebugRendererImpl = nullptr;
 
 	JPH::BodyManager::DrawSettings* DrawSettings = nullptr;
@@ -464,20 +542,21 @@ private:
 	UEJoltDebugRenderer* GetDebugRendererForDraw() const;
 
 	void DrawDebugLines() const;
-#endif
+	#endif
 
 	void LoadLandscapeFromDataAsset();
 
 	static ALandscape* FindSingleLandscape(const UWorld* world);
 
-#if WITH_EDITOR
+	#if WITH_EDITOR
 	void GetAllLandscapeHeights(const ALandscape* landscapeActor);
 
 	bool CookBodies() const;
 
 	void HandleLandscapeMeshes(const ALandscape* LandscapeActor);
+	#endif
 
-#endif
+	static TArray<ULandscapeComponent*> GetLandscapeComponents(const ALandscape* landscapeActor);
 
 	TArray<FExtractedShape> ExtractPhysicsGeometryFromActor(const AActor* actor);
 
@@ -496,16 +575,24 @@ private:
 	void ExtractAggGeomConvex(const FTransform& xformSoFar, const FKAggregateGeom& aggregateGeom, const FVector& scale, const JoltPhysicsMaterial* physicsMaterial, JPH::CompoundShapeSettings* compoundShapeSettings, TArray<FExtractedShape>& OutShapes);
 
 	void ExtractComplexPhysicsGeometry(const FTransform& xformSoFar, const UBodySetup* bodySetup, const FString& meshName, TArray<FExtractedShape>& OutShapes);
-	
+
 	void ExtractMeshShape(
-		const TArray<FVector>& ueVertices, const TArray<int32>& ueIndices,
-		const FTransform& xformSoFar, TArray<FExtractedShape>& OutShapes);
+		const TArray<FVector>& ueVertices, const TArray<int32>&     ueIndices,
+		const FTransform&      xformSoFar, TArray<FExtractedShape>& OutShapes);
 
 	const JPH::Shape* ProcessShapeElement(const UShapeComponent* shapeComponent);
 
 	TArray<FCastShapeResult> CastShapeMultiInternal(const JPH::Shape* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& direction) const;
 
-	bool CastShapeSingleInternal(const JPH::Shape* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& direction, FCastShapeResult& outHit) const;
+	TArray<FCastShapeResult> CastShapeMultiInternal_ByLayers(
+		const JPH::Shape*      shape, const FVector&                  shapeScale, const FTransform& shapeCOM, const FVector& direction,
+		const TArray<FName>&   broadPhaseLayers, const TArray<FName>& objectLayers,
+		const JPH::BodyFilter& inBodyFilter = {}) const;
+
+	bool CastShapeSingleInternal(
+		const JPH::Shape*      shape, const FVector&        shapeScale, const FTransform& shapeCOM,
+		const FVector&         direction, FCastShapeResult& outHit,
+		const JPH::BodyFilter& inBodyFilter = {}) const;
 
 	/*
 	 * Fetch all the actors in UE world and add them to jolt simulation
@@ -545,7 +632,7 @@ private:
 	double PhysicsAlpha_ = 0.0;
 
 	void RecordFrames();
-	
+
 	TArray<FJoltBodyActor> JoltBodyActors;
 
 	TArray<TDelegate<void(float)>> PostInterpolationCallbacks;
@@ -555,6 +642,8 @@ private:
 
 public:
 	FOnJoltReady OnReady;
+
+	double GetPhysicsAlpha() { return PhysicsAlpha_; }
 
 	/** True once OnWorldBeginPlay has finished initializing the worker — for listeners that bind after BeginPlay. */
 	bool IsReady() const { return bIsReady; }
@@ -576,4 +665,8 @@ public:
 
 	friend class UJoltSkeletalMeshComponent;
 	friend class JoltAxisConstraint;
+
+	void DrawDebugShapeComponent(
+		const UShapeComponent* shapeComponent, const FTransform& Transform, FColor        Color,
+		float                  LifeTime = -1, uint8              DepthPriority = 0, float Thickness = 1) const;
 };

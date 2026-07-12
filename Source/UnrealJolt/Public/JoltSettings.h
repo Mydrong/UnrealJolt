@@ -208,9 +208,12 @@ public:
 	/*
 	 * Default layer name used when AddStaticBody is called without an explicit layer parameter.
 	 * Must match an entry in ObjectLayers.
-	 */
+	*/
 	UPROPERTY(Config, EditAnywhere, Category = "Layers")
 	FName DefaultStaticLayer;
+	
+	UPROPERTY(Config, EditAnywhere, Category = "Layers")
+	FName DefaultLandscapeLayer = DefaultStaticLayer;
 
 	#if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;

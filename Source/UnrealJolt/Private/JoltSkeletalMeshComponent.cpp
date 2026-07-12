@@ -63,7 +63,7 @@ void UJoltSkeletalMeshComponent::AddOwnPhysicsAsset()
 		StateFilter->AddToBodyIDAllowList(OwnBodyID);
 	}
 
-	JoltSubSystem->JoltBodyActors.Emplace(FJoltBodyActor{&OwnBodyID, GetOwner()});
+	JoltSubSystem->JoltBodyActors.Emplace(OwnBodyID, GetOwner());
 	BodyFilter = new JPH::IgnoreSingleBodyFilter(OwnBodyID);
 	UE_LOG(JoltSubSystemLogs, Log, TEXT("UJoltSkeletalMeshComponent::AddOwnPhysicsAsset: done setting up own rigid body"));
 }

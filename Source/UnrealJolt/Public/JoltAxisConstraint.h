@@ -14,14 +14,14 @@ public:
 		JoltSubsystem = joltSubsystem;
 	}
 
-	bool SolveVelocityConstraint(int32 BodyId1, int32 BodyId2, FVector inWorldSpaceAxis, float inMinLambda, float inMaxLambda)
+	bool SolveVelocityConstraint(FJoltBodyID BodyId1, FJoltBodyID BodyId2, FVector inWorldSpaceAxis, float inMinLambda, float inMaxLambda)
 	{
 
 		// inWorldSpaceAxis is a unit vector, we don't have to apply any sort of scaling
 		return AxisConstraint.SolveVelocityConstraint(*JoltSubsystem->GetBody(BodyId1), *JoltSubsystem->GetBody(BodyId2), JoltHelpers::ToJoltVec3(inWorldSpaceAxis, false), inMinLambda, inMaxLambda);
 	}
 
-	void CalculateConstraintProperties(int32 BodyId1, FVector inR1PlusU, int32 BodyId2, FVector inR2, FVector inWorldSpaceAxis, float inBias = 0.0f)
+	void CalculateConstraintProperties(FJoltBodyID BodyId1, FVector inR1PlusU, FJoltBodyID BodyId2, FVector inR2, FVector inWorldSpaceAxis, float inBias = 0.0f)
 	{
 		AxisConstraint.CalculateConstraintProperties(*JoltSubsystem->GetBody(BodyId1), JoltHelpers::ToJoltVec3(inR1PlusU), *JoltSubsystem->GetBody(BodyId2), JoltHelpers::ToJoltVec3(inR2), JoltHelpers::ToJoltVec3(inWorldSpaceAxis, false));
 	}
@@ -41,7 +41,7 @@ public:
 	 * This is basically an axis constraint
 	 * The second body bodyID2 can be static or dynamic
 	 */
-	static float ComputeStopImpulse(const UJoltSubsystem* joltsubsystem, uint32 bodyId1, uint32 bodyId2, const FVector& groundPosition, const FVector& inDirection)
+	static float ComputeStopImpulse(const UJoltSubsystem* joltsubsystem, FJoltBodyID bodyId1, FJoltBodyID bodyId2, const FVector& groundPosition, const FVector& inDirection)
 	{
 
 		JPH::Body* bodyA = joltsubsystem->GetBody(bodyId1);
