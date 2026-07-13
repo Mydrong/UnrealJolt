@@ -34,6 +34,11 @@
 
 DEFINE_LOG_CATEGORY(JoltSubSystemLogs);
 
+DECLARE_LLM_MEMORY_STAT(TEXT("Jolt_Physics"), STAT_Jolt_PhysicsLLM, STATGROUP_LLMFULL);
+LLM_DEFINE_TAG(
+	Jolt_Physics, TEXT("Jolt_Physics"), NAME_None,
+	GET_STATFNAME(STAT_Jolt_PhysicsLLM), GET_STATFNAME(STAT_Jolt_PhysicsLLM));
+
 namespace
 {
 	void PopulateIgnoredBodyFilter(JPH::IgnoreMultipleBodiesFilter& OutFilter, const TArray<FJoltBodyID>& IgnoredBodyIDs)
@@ -59,7 +64,31 @@ void UJoltSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	#ifdef JPH_ENABLE_ASSERTS
 	JPH::AssertFailed = JoltHelpers::UEAssertFailed;
 	#endif
-	JPH::RegisterDefaultAllocator();
+	// JPH::RegisterDefaultAllocator();
+	
+	JPH::Allocate = [](size_t inSize) -> void*
+	{
+		LLM_SCOPE_BYTAG(Jolt_Physics);
+		return FMemory::Malloc(inSize);
+	};
+	JPH::Reallocate = [](void* inBlock, size_t inOldSize, size_t inNewSize) -> void*
+	{
+		LLM_SCOPE_BYTAG(Jolt_Physics);
+		return FMemory::Realloc(inBlock, inNewSize);
+	};
+	JPH::Free = [](void* inBlock)
+	{
+		FMemory::Free(inBlock);
+	};
+	JPH::AlignedAllocate = [](size_t inSize, size_t inAlignment) -> void*
+	{
+		LLM_SCOPE_BYTAG(Jolt_Physics);
+		return FMemory::Malloc(inSize, inAlignment);
+	};
+	JPH::AlignedFree = [](void* inBlock)
+	{
+		FMemory::Free(inBlock);
+	};
 	JPH::Factory::sInstance = new JPH::Factory();
 	JPH::RegisterTypes();
 	JoltSettings = GetDefault<UJoltSettings>();
@@ -491,6 +520,8 @@ FJoltBodyID UJoltSubsystem::AddDynamicShapes(
 
 FJoltBodyID UJoltSubsystem::AddStaticBody(const AActor* Body, const float& Friction, const float& Restitution, FName Layer)
 {
+	auto BodyStats = MainPhysicsSystem->GetBodyStats();
+	UE_LOGFMT(LogTemp, Display, "UJoltSubsystem::AddStaticBody NumBodies {0}", BodyStats.mNumBodies);
 	FJoltBodyID ID;
 	// WorldTransform is already in world space (ShapeLocalTransform * ActorWorldTransform).
 	// Use it directly — do NOT compose it with GetActorTransform() again, that would
@@ -506,6 +537,8 @@ FJoltBodyID UJoltSubsystem::AddStaticBody(const AActor* Body, const float& Frict
 
 FJoltBodyID UJoltSubsystem::AddStaticShapes(const FKAggregateGeom& AggregateGeom, const FTransform& worldTransform, const float& friction, const float& restitution, FName Layer)
 {
+	auto BodyStats = MainPhysicsSystem->GetBodyStats();
+	UE_LOGFMT(LogTemp, Display, "UJoltSubsystem::AddStaticBody NumBodies {0}", BodyStats.mNumBodies);
 	FJoltBodyID             ID;
 	TArray<FExtractedShape> Shapes;
 	ExtractPhysicsGeometry(worldTransform, AggregateGeom, nullptr, Shapes);

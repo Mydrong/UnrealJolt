@@ -7,6 +7,7 @@
 #include "GenericPlatform/GenericPlatformMisc.h"
 #include "JoltContactListener.h"
 #include "JoltDataAsset.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "JoltWorker.h"
 #include "JoltSettings.h"
 #include "Landscape.h"
@@ -15,6 +16,8 @@
 #include "JoltFilters.h"
 #include "Delegates/DelegateCombinations.h"
 #include "UObject/ObjectMacros.h"
+
+LLM_DECLARE_TAG(Jolt_Physics);
 
 #ifdef JPH_DEBUG_RENDERER
 #include "JoltDebugRenderer.h"
