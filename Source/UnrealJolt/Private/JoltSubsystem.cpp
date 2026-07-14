@@ -65,28 +65,23 @@ void UJoltSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	JPH::AssertFailed = JoltHelpers::UEAssertFailed;
 	#endif
 	// JPH::RegisterDefaultAllocator();
-	
-	JPH::Allocate = [](size_t inSize) -> void*
-	{
+
+	JPH::Allocate = [](size_t inSize) -> void* {
 		LLM_SCOPE_BYTAG(Jolt_Physics);
 		return FMemory::Malloc(inSize);
 	};
-	JPH::Reallocate = [](void* inBlock, size_t inOldSize, size_t inNewSize) -> void*
-	{
+	JPH::Reallocate = [](void* inBlock, size_t inOldSize, size_t inNewSize) -> void* {
 		LLM_SCOPE_BYTAG(Jolt_Physics);
 		return FMemory::Realloc(inBlock, inNewSize);
 	};
-	JPH::Free = [](void* inBlock)
-	{
+	JPH::Free = [](void* inBlock) {
 		FMemory::Free(inBlock);
 	};
-	JPH::AlignedAllocate = [](size_t inSize, size_t inAlignment) -> void*
-	{
+	JPH::AlignedAllocate = [](size_t inSize, size_t inAlignment) -> void* {
 		LLM_SCOPE_BYTAG(Jolt_Physics);
 		return FMemory::Malloc(inSize, inAlignment);
 	};
-	JPH::AlignedFree = [](void* inBlock)
-	{
+	JPH::AlignedFree = [](void* inBlock) {
 		FMemory::Free(inBlock);
 	};
 	JPH::Factory::sInstance = new JPH::Factory();
@@ -236,6 +231,7 @@ void UJoltSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 
 void UJoltSubsystem::AddAllJoltActors(const UWorld* World)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::AddAllJoltActors);
 	TArray<const AActor*> staticActors;
 	TArray<AActor*>       dynamicActors;
 
@@ -291,6 +287,9 @@ void UJoltSubsystem::Tick(float deltaSeconds)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE_STR("JoltSubsystem_Tick");
 	Super::Tick(deltaSeconds);
+
+	CommitQueuedStaticShapesBatch();
+
 	bHasDrawnDebugLinesThisFrame = false;
 
 	if (JoltWorker == nullptr)
@@ -454,6 +453,7 @@ void UJoltSubsystem::InitPhysicsSystem(
 
 FJoltBodyID UJoltSubsystem::AddDynamicBody(AActor* Actor, const float& friction, const float& restitution, const float& mass, FName Layer)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::AddDynamicBody);
 	FJoltBodyID ID;
 	// RelTransform is already in world space: it is ShapeLocalTransform * ActorWorldTransform,
 	// so it correctly accounts for the collision shape's centre offset (e.g. FKSphylElem::Center)
@@ -466,7 +466,7 @@ FJoltBodyID UJoltSubsystem::AddDynamicBody(AActor* Actor, const float& friction,
 		if (joltBodyID != nullptr)
 		{
 			JoltBodyActors.Emplace(*joltBodyID, Actor);
-			ID = FJoltBodyID::FromJoltBodyID(*joltBodyID);
+			ID = FJoltBodyID(*joltBodyID);
 		}
 	}
 	return ID;
@@ -479,6 +479,7 @@ FJoltBodyID UJoltSubsystem::AddDynamicShapes(
 	float                  friction, float restitution, float mass,
 	FName                  layerName)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::AddDynamicShapes);
 	TArray<FExtractedShape> extractedShapes;
 	ExtractPhysicsGeometry(initialWorldTransform, aggregateGeom, nullptr, extractedShapes);
 
@@ -515,11 +516,12 @@ FJoltBodyID UJoltSubsystem::AddDynamicShapes(
 	{
 		JoltBodyActors.Emplace(*bodyID, actor);
 	}
-	return bodyID != nullptr ? FJoltBodyID::FromJoltBodyID(*bodyID) : FJoltBodyID{};
+	return bodyID != nullptr ? FJoltBodyID(*bodyID) : FJoltBodyID{};
 }
 
 FJoltBodyID UJoltSubsystem::AddStaticBody(const AActor* Body, const float& Friction, const float& Restitution, FName Layer)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::AddStaticBody);
 	auto BodyStats = MainPhysicsSystem->GetBodyStats();
 	UE_LOGFMT(LogTemp, Display, "UJoltSubsystem::AddStaticBody NumBodies {0}", BodyStats.mNumBodies);
 	FJoltBodyID ID;
@@ -530,13 +532,14 @@ FJoltBodyID UJoltSubsystem::AddStaticBody(const AActor* Body, const float& Frict
 	for (auto& Extracted : Shapes)
 	{
 		if (auto bodyID = AddStaticBodyCollision(Extracted.Shape, Extracted.WorldTransform, Friction, Restitution, Layer))
-			ID = FJoltBodyID::FromJoltBodyID(*bodyID);
+			ID = FJoltBodyID(*bodyID);
 	}
 	return ID;
 }
 
 FJoltBodyID UJoltSubsystem::AddStaticShapes(const FKAggregateGeom& AggregateGeom, const FTransform& worldTransform, const float& friction, const float& restitution, FName Layer)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::AddStaticShapes);
 	auto BodyStats = MainPhysicsSystem->GetBodyStats();
 	UE_LOGFMT(LogTemp, Display, "UJoltSubsystem::AddStaticBody NumBodies {0}", BodyStats.mNumBodies);
 	FJoltBodyID             ID;
@@ -545,15 +548,57 @@ FJoltBodyID UJoltSubsystem::AddStaticShapes(const FKAggregateGeom& AggregateGeom
 	for (auto& Extracted : Shapes)
 	{
 		if (auto bodyID = AddStaticBodyCollision(Extracted.Shape, Extracted.WorldTransform, friction, restitution, Layer))
-			ID = FJoltBodyID::FromJoltBodyID(*bodyID);
+			ID = FJoltBodyID(*bodyID);
 	}
 	return ID;
+}
+
+void UJoltSubsystem::AddShapesBatch(const TArray<FJoltBatchAdd>& BatchAdds)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::AddStaticShapesBatch);
+
+	TArray<JPH::BodyID> PreparedBodyIDs = AddStaticBodiesBatch_Prepare(BatchAdds);
+
+	if (PreparedBodyIDs.Num() > 0)
+		AddStaticBodiesBatch_Finalize(PreparedBodyIDs);
+}
+
+void UJoltSubsystem::QueueStaticShapesBatch(const TArray<FJoltBatchAdd>& BatchAdds)
+{
+	if (BatchAdds.Num() == 0)
+		return;
+
+	FScopeLock ScopeLock(&PendingBatchAddsLock);
+	PendingBatchAdds.Append(BatchAdds);
+}
+
+TArray<FJoltBodyID> UJoltSubsystem::CommitQueuedStaticShapesBatch()
+{
+	TArray<FJoltBatchAdd> BatchAdds;
+	{
+		FScopeLock ScopeLock(&PendingBatchAddsLock);
+		BatchAdds = MoveTemp(PendingBatchAdds);
+	}
+
+	TArray<FJoltBodyID> BodyIDs;
+	if (BatchAdds.Num() == 0)
+		return BodyIDs;
+
+	TArray<JPH::BodyID> PreparedBodyIDs = AddStaticBodiesBatch_Prepare(BatchAdds);
+	if (PreparedBodyIDs.Num() > 0)
+		AddStaticBodiesBatch_Finalize(PreparedBodyIDs);
+
+	BodyIDs.Reserve(PreparedBodyIDs.Num());
+	for (const JPH::BodyID BodyID : PreparedBodyIDs)
+		BodyIDs.Add(FJoltBodyID(BodyID));
+	return BodyIDs;
 }
 
 FJoltBodyID UJoltSubsystem::AddMeshShape(
 	const TArray<FVector>& vertices, const TArray<int32>& indices, const FTransform& worldTransform,
 	bool                   bDynamic, float                friction, float            restitution, float Mass, FName Layer)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::AddMeshShape);
 	FJoltBodyID             ID;
 	TArray<FExtractedShape> Shapes;
 	ExtractMeshShape(vertices, indices, worldTransform, Shapes);
@@ -562,12 +607,12 @@ FJoltBodyID UJoltSubsystem::AddMeshShape(
 		if (bDynamic)
 		{
 			if (auto bodyID = AddDynamicBodyCollision(Extracted.Shape, Extracted.WorldTransform, friction, restitution, Mass, Layer))
-				ID = FJoltBodyID::FromJoltBodyID(*bodyID);
+				ID = FJoltBodyID(*bodyID);
 		}
 		else
 		{
 			if (auto bodyID = AddStaticBodyCollision(Extracted.Shape, Extracted.WorldTransform, friction, restitution, Layer))
-				ID = FJoltBodyID::FromJoltBodyID(*bodyID);
+				ID = FJoltBodyID(*bodyID);
 		}
 	}
 	return ID;
@@ -1131,6 +1176,7 @@ const JPH::CapsuleShape* UJoltSubsystem::GetCapsuleCollisionShape(const float& r
 
 const JPH::BodyID* UJoltSubsystem::AddDynamicBodyCollision(const JPH::BodyID& bodyID, const JPH::Shape* shape, const FTransform& initialWorldTransform, float friction, float restitution, float mass, FName layerName)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::AddDynamicBodyCollision);
 	JPH::BodyCreationSettings shapeSettings(
 		shape,
 		JoltHelpers::ToJoltPos(initialWorldTransform.GetLocation()),
@@ -1154,11 +1200,13 @@ const JPH::BodyID* UJoltSubsystem::AddDynamicBodyForExternalOwner(
 	float              friction, float restitution, float mass,
 	FName              layerName)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::AddDynamicBodyForExternalOwner);
 	return AddDynamicBodyCollision(bodyID, shape, initialWorldTransform, friction, restitution, mass, layerName);
 }
 
 const JPH::BodyID* UJoltSubsystem::AddDynamicBodyCollision(const JPH::Shape* shape, const FTransform& initialWorldTransform, float friction, float restitution, float mass, FName layerName)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::AddDynamicBodyCollision);
 	JPH::BodyCreationSettings shapeSettings(
 		shape,
 		JoltHelpers::ToJoltPos(initialWorldTransform.GetLocation()),
@@ -1179,6 +1227,7 @@ const JPH::BodyID* UJoltSubsystem::AddDynamicBodyCollision(const JPH::Shape* sha
 
 const JPH::BodyID* UJoltSubsystem::AddStaticBodyCollision(const JPH::Shape* shape, const FTransform& transform, float friction, float restitution, FName layerName)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::AddStaticBodyCollision);
 	check(shape != nullptr);
 	JPH::BodyCreationSettings shapeSettings(
 		shape,
@@ -1194,6 +1243,7 @@ const JPH::BodyID* UJoltSubsystem::AddStaticBodyCollision(const JPH::Shape* shap
 
 const JPH::BodyID* UJoltSubsystem::AddStaticBodyCollision(const JPH::BodyID& bodyID, const JPH::Shape* shape, const FTransform& initialWorldTransform, float friction, float restitution, FName layerName)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::AddStaticBodyCollision);
 	JPH::BodyCreationSettings shapeSettings(
 		shape,
 		JoltHelpers::ToJoltPos(initialWorldTransform.GetLocation()),
@@ -1206,6 +1256,7 @@ const JPH::BodyID* UJoltSubsystem::AddStaticBodyCollision(const JPH::BodyID& bod
 
 const JPH::BodyID* UJoltSubsystem::AddKinematicBodyCollision(const JPH::BodyID& bodyID, const JPH::Shape* shape, const FTransform& initialWorldTransform, float friction, float restitution, float mass, FName layerName)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::AddKinematicBodyCollision);
 	JPH::BodyCreationSettings shapeSettings(
 		shape,
 		JoltHelpers::ToJoltPos(initialWorldTransform.GetLocation()),
@@ -1223,6 +1274,7 @@ const JPH::BodyID* UJoltSubsystem::AddKinematicBodyCollision(const JPH::BodyID& 
 
 const JPH::BodyID* UJoltSubsystem::AddKinematicBodyCollision(const JPH::Shape* shape, const FTransform& initialWorldTransform, float friction, float restitution, float mass, FName layerName)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::AddKinematicBodyCollision);
 	JPH::BodyCreationSettings shapeSettings(
 		shape,
 		JoltHelpers::ToJoltPos(initialWorldTransform.GetLocation()),
@@ -1242,6 +1294,7 @@ const JPH::BodyID* UJoltSubsystem::AddKinematicBodyCollision(const JPH::Shape* s
 
 const JPH::BodyID* UJoltSubsystem::AddBodyToSimulation(const JPH::BodyID* bodyID, const JPH::BodyCreationSettings& shapeSettings, float friction, float restitution)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::AddBodyToSimulation);
 
 	check(BodyInterface != nullptr);
 	check(bodyID != nullptr);
@@ -1265,9 +1318,112 @@ const JPH::BodyID* UJoltSubsystem::AddBodyToSimulation(const JPH::BodyID* bodyID
 	createdBody->SetRestitution(restitution);
 	createdBody->SetFriction(friction);
 
-	BodyIDBodyMap.Add(FJoltBodyID::FromJoltBodyID(createdBody->GetID()), createdBody);
+	BodyIDBodyMap.Add(FJoltBodyID(createdBody->GetID()), createdBody);
 	BodyInterface->AddBody(createdBody->GetID(), JPH::EActivation::Activate);
 	return &createdBody->GetID();
+}
+
+TArray<JPH::BodyID> UJoltSubsystem::AddStaticBodiesBatch_Prepare(const TArray<FJoltBatchAdd>& BatchAdds)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::AddStaticBodiesBatch_Prepare);
+	check(BodyInterface != nullptr);
+
+	TArray<JPH::BodyID> PreparedBodyIDs;
+
+	if (BatchAdds.Num() == 0)
+		return PreparedBodyIDs;
+
+	PreparedBodyIDs.SetNum(BatchAdds.Num());
+
+	// Create all body settings up front
+	JPH::Array<JPH::BodyCreationSettings> BodySettings;
+	BodySettings.resize(BatchAdds.Num(), JPH::BodyCreationSettings());
+
+	for (int32 i = 0; i < BatchAdds.Num(); ++i)
+	{
+		auto& BatchAdd = BatchAdds[i];
+
+		JPH::ObjectLayer ResolvedLayer = ResolveStaticLayer(BatchAdd.Layer);
+		if (!ensure(ResolvedLayer != JPH::cObjectLayerInvalid))
+		{
+			UE_LOG(
+				JoltSubSystemLogs, Error,
+				TEXT("Refusing to batch create static body %d: object layer '%s' is invalid"),
+				i, *BatchAdd.Layer.ToString());
+			continue;
+		}
+
+		TArray<FExtractedShape> ExtractedShapes;
+		ExtractPhysicsGeometry(
+			BatchAdd.WorldTransform, BatchAdd.AggGeom, BatchAdd.PhysicsMaterial, ExtractedShapes);
+
+		if (!ensure(!ExtractedShapes.IsEmpty()))
+			continue;
+
+		JPH::BodyCreationSettings Settings(
+			ExtractedShapes[0].Shape, // Should only ever be one I think
+			JoltHelpers::ToJoltPos(BatchAdd.WorldTransform.GetLocation()),
+			JoltHelpers::ToJoltRot(BatchAdd.WorldTransform.GetRotation()),
+			BatchAdd.Layer == "Dynamic" ? JPH::EMotionType::Dynamic : JPH::EMotionType::Static,
+			ResolvedLayer);
+		BodySettings[i] = Settings;
+	}
+
+	if (BodySettings.empty())
+		return PreparedBodyIDs;
+
+	// Prepare bodies for batch addition (can be done in background threads).
+	// Jolt allocates a body per entry and hands ownership to us until Finalize/Abort.
+	JPH::Array<JPH::BodyID> BodyIDs;
+	BodyIDs.resize(BodySettings.size());
+	for (size_t i = 0; i < BodySettings.size(); ++i)
+	{
+		JPH::Body* CreatedBody = BodyInterface->CreateBody(BodySettings[i]);
+		if (!ensure(CreatedBody != nullptr))
+		{
+			UE_LOG(
+				JoltSubSystemLogs, Error,
+				TEXT("AddStaticBodiesBatch_Prepare: failed to create body %d"), (int32)i);
+			continue;
+		}
+
+		CreatedBody->SetRestitution(BatchAdds[i].Restitution);
+		CreatedBody->SetFriction(BatchAdds[i].Friction);
+
+		BodyIDBodyMap.Add(FJoltBodyID(CreatedBody->GetID()), CreatedBody);
+
+		JPH::BodyID BodyIDPtr = JPH::BodyID(CreatedBody->GetID());
+		PreparedBodyIDs[i] = BodyIDPtr;
+	}
+
+	return PreparedBodyIDs;
+}
+
+void UJoltSubsystem::AddStaticBodiesBatch_Finalize(const TArray<JPH::BodyID>& PreparedBodyIDs)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(UJoltSubsystem::AddStaticBodiesBatch_Finalize);
+	check(BodyInterface != nullptr);
+
+	if (PreparedBodyIDs.Num() == 0)
+		return;
+
+	JPH::Array<JPH::BodyID> BodyIDs;
+	BodyIDs.reserve(PreparedBodyIDs.Num());
+
+	for (const JPH::BodyID ID : PreparedBodyIDs)
+	{
+		if (ID.IsInvalid())
+			continue;
+		BodyIDs.push_back(ID);
+	}
+
+	if (!BodyIDs.empty())
+	{
+		JPH::BodyInterface::AddState AddState = BodyInterface->AddBodiesPrepare(
+			BodyIDs.data(), (int)BodyIDs.size());
+		BodyInterface->AddBodiesFinalize(
+			BodyIDs.data(), (int)BodyIDs.size(), AddState, JPH::EActivation::Activate);
+	}
 }
 
 void UJoltSubsystem::RemoveBodyForExternalOwner(const FJoltBodyID& bodyID)

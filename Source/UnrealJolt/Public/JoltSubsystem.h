@@ -15,6 +15,7 @@
 #include "JoltLayerTable.h"
 #include "JoltFilters.h"
 #include "Delegates/DelegateCombinations.h"
+#include "PhysicsEngine/AggregateGeom.h"
 #include "UObject/ObjectMacros.h"
 
 LLM_DECLARE_TAG(Jolt_Physics);
@@ -31,7 +32,6 @@ class UJoltSkeletalMeshComponent;
 class JoltAxisConstraint;
 class JoltPhysicsMaterial;
 class UBodySetup;
-struct FKAggregateGeom;
 struct FKConvexElem;
 
 USTRUCT(BlueprintType)
@@ -66,7 +66,7 @@ struct FCastShapeResult
 	GENERATED_USTRUCT_BODY()
 
 	FJoltBodyID ContactBodyID;
-	
+
 	FVector LocationShape;
 
 	FVector ContactPointOn2;
@@ -75,6 +75,19 @@ struct FCastShapeResult
 
 	/** Fraction of the sweep where the hit occurred (0 = at start, 1 = at end). Negative or 0 indicates initial penetration. */
 	float Fraction = 1.0f;
+};
+
+USTRUCT()
+struct FJoltBatchAdd
+{
+	GENERATED_BODY()
+
+	FKAggregateGeom AggGeom;
+	FTransform WorldTransform;
+	float Friction;
+	float Restitution;
+	FName Layer;
+	JoltPhysicsMaterial* PhysicsMaterial = nullptr;
 };
 
 struct FJoltBodyActor
@@ -125,6 +138,12 @@ public:
 	FJoltBodyID AddStaticBody(const AActor* body, const float& friction, const float& restitution, FName Layer = NAME_None);
 
 	FJoltBodyID AddStaticShapes(const FKAggregateGeom& AggregateGeom, const FTransform& worldTransform, const float& friction, const float& restitution, FName Layer = NAME_None);
+
+	/// Batch add static shapes for multiple transforms all at once (more efficient than calling AddStaticShapes multiple times)
+	void AddShapesBatch(const TArray<FJoltBatchAdd>& BatchAdds);
+
+	/// Queues static shapes for batch creation after the current physics step.
+	void QueueStaticShapesBatch(const TArray<FJoltBatchAdd>& BatchAdds);
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics", meta = (AdvancedDisplay = "Layer"))
 	FJoltBodyID AddMeshShape(
@@ -477,6 +496,20 @@ protected:
 
 	const JPH::BodyID* AddBodyToSimulation(const JPH::BodyID* bodyID, const JPH::BodyCreationSettings& shapeSettings, float friction, float restitution);
 
+	// --- Batch Add Support ---
+
+	/// Begins a batch add operation for static bodies. Can be called from background threads.
+	/// Returns handles to created bodies that must be finalized with AddStaticBodiesBatch_Finalize.
+	TArray<JPH::BodyID> AddStaticBodiesBatch_Prepare(const TArray<FJoltBatchAdd>& BatchAdds);
+
+	/// Finalizes a batch add operation, atomically adding all prepared bodies to the physics system.
+	/// Must be called from the main thread.
+	void AddStaticBodiesBatch_Finalize(const TArray<JPH::BodyID>& BodyIDs);
+
+	/// Commits bodies queued with QueueStaticShapesBatch. Derived subsystems can override this
+	/// to consume the returned body IDs while retaining the batch-entry ordering.
+	virtual TArray<FJoltBodyID> CommitQueuedStaticShapesBatch();
+
 	JPH::Body* GetBody(const FJoltBodyID& bodyID) const { return BodyIDBodyMap[bodyID]; }
 
 	UPROPERTY()
@@ -639,6 +672,9 @@ protected:
 	TArray<FJoltBodyActor> JoltBodyActors;
 
 	TArray<TDelegate<void(float)>> PostInterpolationCallbacks;
+
+	FCriticalSection PendingBatchAddsLock;
+	TArray<FJoltBatchAdd> PendingBatchAdds;
 
 	bool bIsReady = false;
 	bool bHasDrawnDebugLinesThisFrame = false;

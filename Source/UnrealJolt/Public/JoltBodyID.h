@@ -18,11 +18,6 @@ struct UNREALJOLT_API FJoltBodyID
 	FJoltBodyID(const JPH::BodyID& InBodyID)
 		: BodyID(InBodyID) {}
 
-	static FJoltBodyID FromJoltBodyID(const JPH::BodyID& InBodyID)
-	{
-		return FJoltBodyID(InBodyID);
-	}
-
 	bool IsValid() const
 	{
 		return !BodyID.IsInvalid();
