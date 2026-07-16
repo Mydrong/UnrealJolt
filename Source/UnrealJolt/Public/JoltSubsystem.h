@@ -18,7 +18,9 @@
 #include "PhysicsEngine/AggregateGeom.h"
 #include "UObject/ObjectMacros.h"
 
-LLM_DECLARE_TAG(Jolt_Physics);
+#if ENABLE_LOW_LEVEL_MEM_TRACKER
+LLM_DECLARE_TAG_API(Jolt_Physics, UNREALJOLT_API);
+#endif
 
 #ifdef JPH_DEBUG_RENDERER
 #include "JoltDebugRenderer.h"

@@ -1,4 +1,5 @@
 #include "JoltWorker.h"
+#include "JoltTaskGraphJobSystem.h"
 #include "UnrealJolt/JoltMain.h"
 #include "Misc/AssertionMacros.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
@@ -16,8 +17,7 @@ FJoltWorker::FJoltWorker(const FJoltWorkerOptions* workerOptions)
 	TempAllocator = new JPH::TempAllocatorImpl(WorkerOptions->cPreAllocatedMemory * 1024 * 1024);
 
 	WorkerOptions->cEnableMultithreading
-		// The JobSystemThreadPool is an example implementaion, and should be rewritten using the unreal task system
-		? JobSystem = new JPH::JobSystemThreadPool(WorkerOptions->cMaxPhysicsJobs, WorkerOptions->cMaxPhysicsBarriers, WorkerOptions->cMaxThreads)
+		? JobSystem = new FJoltTaskGraphJobSystem(WorkerOptions->cMaxPhysicsJobs, WorkerOptions->cMaxPhysicsBarriers, WorkerOptions->cMaxThreads)
 		: JobSystem = new JPH::JobSystemSingleThreaded(WorkerOptions->cMaxPhysicsJobs);
 }
 

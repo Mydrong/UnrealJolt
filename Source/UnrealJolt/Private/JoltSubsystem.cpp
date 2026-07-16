@@ -20,6 +20,7 @@
 #include "LandscapeComponent.h"
 #include "LandscapeSplineSegment.h"
 #include "LandscapeSplinesComponent.h"
+#include "HAL/LowLevelMemStats.h"
 #include "Misc/AssertionMacros.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "Chaos/TriangleMeshImplicitObject.h"
@@ -34,10 +35,10 @@
 
 DEFINE_LOG_CATEGORY(JoltSubSystemLogs);
 
-DECLARE_LLM_MEMORY_STAT(TEXT("Jolt_Physics"), STAT_Jolt_PhysicsLLM, STATGROUP_LLMFULL);
+DECLARE_LLM_MEMORY_STAT_EXTERN(TEXT("Jolt_Physics"), STAT_Jolt_PhysicsLLM, STATGROUP_LLM, UNREALJOLT_API);
 LLM_DEFINE_TAG(
-	Jolt_Physics, TEXT("Jolt_Physics"), NAME_None,
-	GET_STATFNAME(STAT_Jolt_PhysicsLLM), GET_STATFNAME(STAT_Jolt_PhysicsLLM));
+	Jolt_Physics, "Jolt_Physics", NAME_None, GET_STATFNAME(STAT_Jolt_PhysicsLLM));
+DEFINE_STAT(STAT_Jolt_PhysicsLLM);
 
 namespace
 {

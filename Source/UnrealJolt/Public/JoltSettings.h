@@ -111,8 +111,7 @@ public:
 	int MaxPhysicsJobs;
 
 	/*
-	 * Multithreading currently uses the example implementation in jolt, which works but might need a proper implementation as suggesed by jolt
-	 * using the task system
+	 * Multithreading schedules Jolt jobs on Unreal's shared Task Graph worker threads.
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = Settings)
 	bool bEnableMultithreading;
@@ -124,7 +123,8 @@ public:
 	int MaxPhysicsBarriers;
 
 	/*
-	 *Number of threads to start (the number of concurrent jobs is 1 more because the main thread will also run jobs while waiting for a barrier to complete). Use -1 to auto detect the amount of CPU's.
+	 * Maximum Task Graph workers Jolt may use. The physics step thread also participates while waiting for barriers.
+	 * Use -1 to use all available Task Graph workers, or 0 to run Jolt jobs only on the physics step thread.
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = Settings, meta = (EditCondition = "bEnableMultithreading"))
 	int MaxThreads;

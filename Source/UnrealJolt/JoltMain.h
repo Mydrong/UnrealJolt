@@ -17,7 +17,7 @@ PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/Physics/StateRecorder.h>
 #include <Jolt/Physics/PhysicsSettings.h>
-#include <Jolt/Core/JobSystemThreadPool.h>
+#include <Jolt/Core/JobSystem.h>
 #include <Jolt/Physics/StateRecorderImpl.h>
 #include <Jolt/Core/JobSystemSingleThreaded.h>
 
