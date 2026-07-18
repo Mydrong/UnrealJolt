@@ -11,14 +11,13 @@ using System.Text.RegularExpressions;
 
 public class UnrealJoltLibrary : ModuleRules
 {
-
 	private void BuildJolt(string BuildType, ReadOnlyTargetRules Target)
 	{
-
 		var ThirdPartyJoltPath = Path.Combine(ModuleDirectory, "JoltPhysics");
-		var ModulePath = Path.Combine( ModuleDirectory, "JoltPhysics", "Build");
+		var ModulePath = Path.Combine(ModuleDirectory, "JoltPhysics", "Build");
 		var JoltBuildDir = MBuildUtils.GetJoltBuildDir(ModuleDirectory, Target);
-		var EngineDir = Path.GetFullPath(Target.RelativeEnginePath);;
+		var EngineDir = Path.GetFullPath(Target.RelativeEnginePath);
+		;
 
 		Console.WriteLine("Jolt third party directory: " + ThirdPartyJoltPath);
 		//-- Generation step
@@ -28,7 +27,7 @@ public class UnrealJoltLibrary : ModuleRules
 		var cmakeOptions = "";
 
 		// NOTE: for big worlds, larger than 5KM. https://jrouwe.github.io/JoltPhysics/index.html#big-worlds 
-		cmakeOptions += " -DDOUBLE_PRECISION=ON"; 
+		cmakeOptions += " -DDOUBLE_PRECISION=ON";
 		cmakeOptions += " -DCROSS_PLATFORM_DETERMINISTIC=ON ";
 		cmakeOptions += " -DOBJECT_LAYER_BITS=32 ";
 		cmakeOptions += " -DINTERPROCEDURAL_OPTIMIZATION=ON ";
@@ -97,7 +96,6 @@ public class UnrealJoltLibrary : ModuleRules
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Linux)
 		{
-
 			cmakeGeneratorType = "\"Unix Makefiles\"";
 			// Build Jolt as a shared library on Linux so every consuming .so
 			// resolves JPH symbols through a single libJolt.so at runtime. A
@@ -117,23 +115,28 @@ public class UnrealJoltLibrary : ModuleRules
 			string libCxxIncludes;
 			if (Directory.Exists(legacyLibCxxPath))
 			{
-				libCxxIncludes = "-I " + EngineDir + "Source/ThirdParty/Unix/LibCxx/include/ -I " + EngineDir + "Source/ThirdParty/Unix/LibCxx/include/c++/v1/";
+				libCxxIncludes = "-I " + EngineDir + "Source/ThirdParty/Unix/LibCxx/include/ -I " + EngineDir +
+				                 "Source/ThirdParty/Unix/LibCxx/include/c++/v1/";
 			}
 			else
 			{
-				libCxxIncludes = "-I " + toolChain + "/x86_64-unknown-linux-gnu/include/ -I " + toolChain + "/x86_64-unknown-linux-gnu/include/c++/v1/";
+				libCxxIncludes = "-I " + toolChain + "/x86_64-unknown-linux-gnu/include/ -I " + toolChain +
+				                 "/x86_64-unknown-linux-gnu/include/c++/v1/";
 			}
-			cmakeOptions += " -DCMAKE_CXX_FLAGS=\"-ffp-model=precise -ffp-contract=off -Wno-overriding-option -nostdinc++ " + libCxxIncludes + "\" ";
+
+			cmakeOptions +=
+				" -DCMAKE_CXX_FLAGS=\"-ffp-model=precise -ffp-contract=off -Wno-overriding-option -nostdinc++ " +
+				libCxxIncludes + "\" ";
 			switch (BuildType)
 			{
 				case "Debug":
-					cmakeOptions += " -DUSE_ASSERTS=ON " ;
+					cmakeOptions += " -DUSE_ASSERTS=ON ";
 					cmakeOptions += " -DDEBUG_RENDERER_IN_DISTRIBUTION=ON ";
 					cmakeOptions += " -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ";
 					buildTypeGenerator = "-DCMAKE_CONFIGURATION_TYPES=Debug";
 					break;
 				case "Release":
-					cmakeOptions += " -DUSE_ASSERTS=ON " ;
+					cmakeOptions += " -DUSE_ASSERTS=ON ";
 					cmakeOptions += " -DDEBUG_RENDERER_IN_DISTRIBUTION=ON ";
 					cmakeOptions += " -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ";
 					buildTypeGenerator = "-DCMAKE_CONFIGURATION_TYPES=Release";
@@ -142,12 +145,37 @@ public class UnrealJoltLibrary : ModuleRules
 					buildTypeGenerator = "-DCMAKE_CONFIGURATION_TYPES=Distribution ";
 					break;
 			}
-		}else
+		}
+		else
 		{
 			Console.WriteLine("[ERROR] You are trying to build Jolt on an unsupported platform: `" + Target.Platform);
 			return;
 		}
 
+		var joltLibraryPath = GetJoltLibraryPath(JoltBuildDir, BuildType, Target);
+		var buildStampPath = Path.Combine(JoltBuildDir, ".jolt-build-stamp");
+		var buildSignature = CreateBuildSignature(BuildType, Target, cmakeOptions, ThirdPartyJoltPath, ModulePath);
+		{
+			// This prevents the jolt cmake build from running every time.
+			// To Force a Jolt rebuild:
+			// In PowerShell, set the environment variable before starting the Unreal build:
+			// 	$env:MYPROJECT_FORCE_JOLT_BUILD = "1"
+			// After the build:
+			// Remove-Item Env:MYPROJECT_FORCE_JOLT_BUILD
+			// 	Alternatively, delete the relevant .jolt-build-stamp file.
+			var forceJoltBuild = Environment.GetEnvironmentVariable("MYPROJECT_FORCE_JOLT_BUILD") == "1";
+			if (!forceJoltBuild && File.Exists(joltLibraryPath) && File.Exists(buildStampPath) &&
+			    File.ReadAllText(buildStampPath) == buildSignature)
+			{
+				Console.WriteLine("Jolt is up to date, skipping CMake build: " + joltLibraryPath);
+				return;
+			}
+
+			if (forceJoltBuild)
+			{
+				Console.WriteLine("MYPROJECT_FORCE_JOLT_BUILD=1, rebuilding Jolt");
+			}
+		}
 
 		var generateCommand = "";
 		generateCommand += MBuildUtils.GetCMakeExe() + " ";
@@ -156,12 +184,13 @@ public class UnrealJoltLibrary : ModuleRules
 		generateCommand += "-G " + cmakeGeneratorType + " ";
 		generateCommand += buildTypeGenerator;
 		generateCommand += cmakeOptions;
-		var configureCode = MBuildUtils.ExecuteCommandSync(generateCommand,Path.GetFullPath(ModulePath));
+		var configureCode = MBuildUtils.ExecuteCommandSync(generateCommand, Path.GetFullPath(ModulePath));
 		if (configureCode != 0)
 		{
 			Console.WriteLine("Jolt lib configure CMake project failed with code: " + configureCode);
 			return;
 		}
+
 		// Compilation step
 		var buildCommand = "";
 		buildCommand += MBuildUtils.GetCMakeExe() + " ";
@@ -170,20 +199,64 @@ public class UnrealJoltLibrary : ModuleRules
 		buildCommand += buildTypeCompilator;
 
 
-		var buildExitCode = MBuildUtils.ExecuteCommandSync (buildCommand, Path.GetFullPath(ModulePath));
+		var buildExitCode = MBuildUtils.ExecuteCommandSync(buildCommand, Path.GetFullPath(ModulePath));
 		if (buildExitCode != 0)
 		{
 			Console.WriteLine("Jolt lib build failed with code: " + buildExitCode);
 		}
+		else
+		{
+			Directory.CreateDirectory(JoltBuildDir);
+			File.WriteAllText(buildStampPath, buildSignature);
+		}
+	}
+
+	private static string GetJoltLibraryPath(string joltBuildDir, string buildType, ReadOnlyTargetRules target)
+	{
+		if (target.Platform == UnrealTargetPlatform.Win64)
+		{
+			return Path.Combine(joltBuildDir, buildType, "Jolt.lib");
+		}
+
+		if (target.Platform == UnrealTargetPlatform.Linux)
+		{
+			return Path.Combine(joltBuildDir, "libJolt.so");
+		}
+
+		return Path.Combine(joltBuildDir, "libJolt.a");
+	}
+
+	private static string CreateBuildSignature(string buildType, ReadOnlyTargetRules target, string cMakeOptions,
+		string sourcePath, string cMakePath)
+	{
+		var newestSourceWriteTime = GetLatestWriteTimeUtc(sourcePath);
+		var newestCMakeWriteTime = GetLatestWriteTimeUtc(cMakePath);
+		return buildType + "|" + target.Platform + "|" + cMakeOptions + "|" +
+		       newestSourceWriteTime.Ticks + "|" + newestCMakeWriteTime.Ticks;
+	}
+
+	private static DateTime GetLatestWriteTimeUtc(string directoryPath)
+	{
+		var latestWriteTime = DateTime.MinValue;
+		foreach (var filePath in Directory.GetFiles(directoryPath, "*", SearchOption.AllDirectories))
+		{
+			var writeTime = File.GetLastWriteTimeUtc(filePath);
+			if (writeTime > latestWriteTime)
+			{
+				latestWriteTime = writeTime;
+			}
+		}
+
+		return latestWriteTime;
 	}
 
 	public UnrealJoltLibrary(ReadOnlyTargetRules Target) : base(Target)
 	{
-				// DOC: https://docs.unreal engine.com/4.27/en-US/Production Pipelines/BuildTools/UnrealBuild Tool/Third Party Libraries/
+		// DOC: https://docs.unreal engine.com/4.27/en-US/Production Pipelines/BuildTools/UnrealBuild Tool/Third Party Libraries/
 		// Useful resource: https://github.com/caseymcc/UE4CMake/
 		// The ModuleType. External setting tells the engine not to look for (or compile) source code.
 		string JoltBuildDir = MBuildUtils.GetJoltBuildDir(ModuleDirectory, Target);
-		string ThirdPartyJoltPath= Path.Combine(ModuleDirectory, "JoltPhysics");
+		string ThirdPartyJoltPath = Path.Combine(ModuleDirectory, "JoltPhysics");
 		Type = ModuleType.External;
 		string buildType;
 		if (Target.Configuration == UnrealTargetConfiguration.Debug)
@@ -191,7 +264,7 @@ public class UnrealJoltLibrary : ModuleRules
 			buildType = "Debug";
 		}
 		else if (Target.Configuration == UnrealTargetConfiguration.Development ||
-				 Target.Configuration == UnrealTargetConfiguration.DebugGame)
+		         Target.Configuration == UnrealTargetConfiguration.DebugGame)
 		{
 			buildType = "Release";
 		}
@@ -224,29 +297,29 @@ public class UnrealJoltLibrary : ModuleRules
 		switch (buildType)
 		{
 			case "Debug":
-				{
-					// DEBUG
-					Console.WriteLine("Building Jolt: DEBUG");
-					PublicDefinitions.Add("_DEBUG=1");
-					PublicDefinitions.Add("JPH_DEBUG_RENDERER");
-					// Only on windows when compiling in debug mode this is enabled.
-					PublicDefinitions.Add(Target.Platform == UnrealTargetPlatform.Win64
-							? "JPH_FLOATING_POINT_EXCEPTIONS_ENABLED=1"
-							: "JPH_ENABLE_ASSERTS");
+			{
+				// DEBUG
+				Console.WriteLine("Building Jolt: DEBUG");
+				PublicDefinitions.Add("_DEBUG=1");
+				PublicDefinitions.Add("JPH_DEBUG_RENDERER");
+				// Only on windows when compiling in debug mode this is enabled.
+				PublicDefinitions.Add(Target.Platform == UnrealTargetPlatform.Win64
+					? "JPH_FLOATING_POINT_EXCEPTIONS_ENABLED=1"
+					: "JPH_ENABLE_ASSERTS");
 
-					break;
-				}
+				break;
+			}
 			case "Release":
-				{
-					// RELEASE
-					Console.WriteLine("Building Jolt: RELEASE");
-					PublicDefinitions.Add("JPH_DEBUG_RENDERER");
-					PublicDefinitions.Add(Target.Platform == UnrealTargetPlatform.Win64
-							? "JPH_FLOATING_POINT_EXCEPTIONS_ENABLED"
-							: "JPH_ENABLE_ASSERTS");
+			{
+				// RELEASE
+				Console.WriteLine("Building Jolt: RELEASE");
+				PublicDefinitions.Add("JPH_DEBUG_RENDERER");
+				PublicDefinitions.Add(Target.Platform == UnrealTargetPlatform.Win64
+					? "JPH_FLOATING_POINT_EXCEPTIONS_ENABLED"
+					: "JPH_ENABLE_ASSERTS");
 
-					break;
-				}
+				break;
+			}
 			default:
 				// DISTRIBUTION
 				Console.WriteLine("Building Jolt: DISTRIBUTION");
@@ -279,6 +352,7 @@ public class UnrealJoltLibrary : ModuleRules
 					libPath = Path.Combine(JoltBuildDir, "Distribution", "Jolt.lib");
 					break;
 			}
+
 			PublicAdditionalLibraries.Add(libPath);
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
@@ -297,72 +371,82 @@ public class UnrealJoltLibrary : ModuleRules
 			PublicRuntimeLibraryPaths.Add(JoltBuildDir);
 			RuntimeDependencies.Add(Path.Combine(JoltBuildDir, "libJolt.so"));
 		}
-
-
 	}
 }
 
 // from UE4CMAKE:  https://github.com/caseymcc/UE4CMake/blob/main/Source/CMakeTarget.Build.cs
-public class MBuildUtils {
+public class MBuildUtils
+{
 	public static Tuple<string, string> GetExecuteCommandSync()
 	{
 		string cmd = "";
 		string options = "";
 
-		if((BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64) 
+		if ((BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
 #if !UE_5_0_OR_LATER
 				|| (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win32)
-#endif//!UE_5_0_OR_LATER
-		  )
+#endif //!UE_5_0_OR_LATER
+		   )
 		{
-			cmd="cmd.exe";
-			options="/c ";
+			cmd = "cmd.exe";
+			options = "/c ";
 		}
-		else if(IsUnixPlatform(BuildHostPlatform.Current.Platform)) 
+		else if (IsUnixPlatform(BuildHostPlatform.Current.Platform))
 		{
-			cmd="bash";
-			options="-c ";
+			cmd = "bash";
+			options = "-c ";
 		}
+
 		return Tuple.Create(cmd, options);
 	}
 
 	public static int ExecuteCommandSync(string Command, string MModulePath)
 	{
-		var cmdInfo=GetExecuteCommandSync();
+		var cmdInfo = GetExecuteCommandSync();
 
-		if(IsUnixPlatform(BuildHostPlatform.Current.Platform)) 
+		if (IsUnixPlatform(BuildHostPlatform.Current.Platform))
 		{
-			Command=" \""+Command.Replace("\"", "\\\"")+" \"";
+			Command = " \"" + Command.Replace("\"", "\\\"") + " \"";
 		}
 
-		Console.WriteLine("Calling: "+cmdInfo.Item1+" "+cmdInfo.Item2+Command);
+		Console.WriteLine("Calling: " + cmdInfo.Item1 + " " + cmdInfo.Item2 + Command);
 
-		var processInfo = new ProcessStartInfo(cmdInfo.Item1, cmdInfo.Item2+Command)
+		var processInfo = new ProcessStartInfo(cmdInfo.Item1, cmdInfo.Item2 + Command)
 		{
-			CreateNoWindow=true,
-			UseShellExecute=false,
-			RedirectStandardError=true,
-			RedirectStandardOutput=true,
-			WorkingDirectory=MModulePath
+			CreateNoWindow = true,
+			UseShellExecute = false,
+			RedirectStandardError = true,
+			RedirectStandardOutput = true,
+			WorkingDirectory = MModulePath
 		};
 
 		var outputString = new StringBuilder();
 		var p = Process.Start(processInfo);
 
-		p.OutputDataReceived+=(_, args) => {outputString.Append(args.Data); Console.WriteLine(args.Data);};
-		p.ErrorDataReceived+=(_, args) => {outputString.Append(args.Data); Console.WriteLine(args.Data);};
+		p.OutputDataReceived += (_, args) =>
+		{
+			outputString.Append(args.Data);
+			Console.WriteLine(args.Data);
+		};
+		p.ErrorDataReceived += (_, args) =>
+		{
+			outputString.Append(args.Data);
+			Console.WriteLine(args.Data);
+		};
 		p.BeginOutputReadLine();
 		p.BeginErrorReadLine();
 		p.WaitForExit();
 
-		if(p.ExitCode != 0)
+		if (p.ExitCode != 0)
 		{
 			Console.WriteLine(outputString);
 		}
+
 		return p.ExitCode;
 	}
 
-	private static bool IsUnixPlatform(UnrealTargetPlatform Platform) {
+	private static bool IsUnixPlatform(UnrealTargetPlatform Platform)
+	{
 		return Platform == UnrealTargetPlatform.Linux || Platform == UnrealTargetPlatform.Mac;
 	}
 
@@ -370,18 +454,19 @@ public class MBuildUtils {
 	{
 		var program = "cmake";
 
-		if((BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64) 
+		if ((BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
 #if !UE_5_0_OR_LATER
 				|| (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win32)
-#endif//!UE_5_0_OR_LATER
-		  )
+#endif //!UE_5_0_OR_LATER
+		   )
 		{
-			program+=".exe";
+			program += ".exe";
 		}
+
 		return program;
 	}
 
-	
+
 	public static string GetJoltBuildDir(string ModuleDirectory, ReadOnlyTargetRules Target)
 	{
 		string configFolder = "lib";
@@ -419,6 +504,7 @@ public class MBuildUtils {
 		{
 			return Path.Combine(ModuleDirectory, configFolder, "Linux");
 		}
+
 		return "invalid platform";
 	}
 
@@ -433,12 +519,12 @@ public class MBuildUtils {
 
 		var toolchains = Directory.GetDirectories(toolchainBase)
 			.Select(dir => new
-					{
-					Path = dir,
-					Name = Path.GetFileName(dir),
-					Match = Regex.Match(Path.GetFileName(dir), @"^v(\d+)_clang-.*$")
-					})
-		.Where(t => t.Match.Success)
+			{
+				Path = dir,
+				Name = Path.GetFileName(dir),
+				Match = Regex.Match(Path.GetFileName(dir), @"^v(\d+)_clang-.*$")
+			})
+			.Where(t => t.Match.Success)
 			.OrderByDescending(t => int.Parse(t.Match.Groups[1].Value))
 			.ToList();
 
@@ -449,7 +535,4 @@ public class MBuildUtils {
 
 		return toolchains.First().Path;
 	}
-
 }
-
-
