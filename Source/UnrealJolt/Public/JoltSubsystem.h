@@ -69,10 +69,13 @@ struct FCastShapeResult
 
 	FJoltBodyID ContactBodyID;
 
+	/// The location of the shape that was swept (the "cast" shape) at the time of contact.
 	FVector LocationShape;
 
+	/// Contact point on the surface of the hit shape.
 	FVector ContactPointOn2;
 
+	/// Contact point on the surface of the casted shape.
 	FVector ContactPointOn1;
 
 	/** Fraction of the sweep where the hit occurred (0 = at start, 1 = at end). Negative or 0 indicates initial penetration. */
@@ -84,11 +87,11 @@ struct FJoltBatchAdd
 {
 	GENERATED_BODY()
 
-	FKAggregateGeom AggGeom;
-	FTransform WorldTransform;
-	float Friction;
-	float Restitution;
-	FName Layer;
+	FKAggregateGeom      AggGeom;
+	FTransform           WorldTransform;
+	float                Friction;
+	float                Restitution;
+	FName                Layer;
 	JoltPhysicsMaterial* PhysicsMaterial = nullptr;
 };
 
@@ -675,7 +678,7 @@ protected:
 
 	TArray<TDelegate<void(float)>> PostInterpolationCallbacks;
 
-	FCriticalSection PendingBatchAddsLock;
+	FCriticalSection      PendingBatchAddsLock;
 	TArray<FJoltBatchAdd> PendingBatchAdds;
 
 	bool bIsReady = false;
