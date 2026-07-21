@@ -1121,26 +1121,26 @@ const JPH::SphereShape* UJoltSubsystem::GetSphereCollisionShape(const float& rad
 	// Simple brute force lookup for now, probably doesn't need anything more clever
 	float Rad = JoltHelpers::ToJoltSize(radius);
 
-	for (const JPH::SphereShape*& S : SphereShapes)
-	{
-		if (!FMath::IsNearlyEqual(S->GetRadius(), Rad))
-		{
-			continue;
-		}
-
-		if (material && S->GetMaterial() != material)
-		{
-			continue;
-		}
-
-		return S;
-	}
+	// for (const JPH::SphereShape*& S : SphereShapes)
+	// {
+	// 	if (!FMath::IsNearlyEqual(S->GetRadius(), Rad))
+	// 	{
+	// 		continue;
+	// 	}
+	//
+	// 	if (material && S->GetMaterial() != material)
+	// 	{
+	// 		continue;
+	// 	}
+	//
+	// 	return S;
+	// }
 
 	// Not found, create
 	JPH::Ref<JPH::SphereShape> S = new JPH::SphereShape(Rad);
 	S->AddRef();
 	S->SetMaterial(material);
-	SphereShapes.Add(S);
+	// SphereShapes.Add(S);
 
 	return S;
 }
@@ -1648,6 +1648,7 @@ TArray<FCastShapeResult> UJoltSubsystem::CastShapeMultiInternal_ByLayers(
 	const TArray<FName>&   broadPhaseLayers, const TArray<FName>& objectLayers,
 	const JPH::BodyFilter& inBodyFilter) const
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(Jolt_CastShapeMultiInternal_ByLayers);
 	TArray<FCastShapeResult> shapeCastResults;
 
 	if (shape == nullptr || MainPhysicsSystem == nullptr)
@@ -1691,13 +1692,12 @@ TArray<FCastShapeResult> UJoltSubsystem::CastShapeMultiInternal_ByLayers(
 		if (DistSq > maxDist)
 			continue;
 
-		shapeCastResults.Add({
+		shapeCastResults.Emplace(
 			FJoltBodyID(hit.mBodyID2),
 			shapeCOM.GetLocation() + direction * hit.mFraction * 100.f,
 			JoltHelpers::ToUESize(hit.mContactPointOn2),
 			JoltHelpers::ToUESize(hit.mContactPointOn1),
-			hit.mFraction
-		});
+			hit.mFraction);
 	}
 
 	return shapeCastResults;
@@ -1768,6 +1768,264 @@ bool UJoltSubsystem::CastShapeSingle(
 		inShape, inShapeScale, inShapeCOM, inDirection, outHit, inBodyFilter);
 }
 
+TArray<FCastShapeResult> UJoltSubsystem::CollideShapeMultiInternal_ByLayers(
+	const JPH::Shape*      shape, const FVector&                  shapeScale, const FTransform& shapeCOM,
+	const TArray<FName>&   broadPhaseLayers, const TArray<FName>& objectLayers,
+	const JPH::BodyFilter& inBodyFilter) const
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(Jolt_CollideShapeMultiInternal_ByLayers);
+	TArray<FCastShapeResult> shapeCollideResults;
+
+	if (shape == nullptr || MainPhysicsSystem == nullptr)
+		return shapeCollideResults;
+
+	JPH::CollideShapeSettings settings;
+	settings.mBackFaceMode = JPH::EBackFaceMode::CollideWithBackFaces;
+
+	JPH::AllHitCollisionCollector<JPH::CollideShapeCollector> collector;
+	MainPhysicsSystem->GetNarrowPhaseQuery().CollideShape(
+		shape,
+		JoltHelpers::ToJoltVec3(shapeScale, false),
+		JoltHelpers::ToJoltTransform(shapeCOM),
+		settings,
+		JoltHelpers::ToJoltPos(FVector::ZeroVector),
+		collector,
+		BroadPhaseLayersFilter_ByLayers_UE(broadPhaseLayers, LayerTable),
+		ObjectLayersFilter_ByLayers_UE(objectLayers, LayerTable),
+		inBodyFilter);
+
+	collector.Sort();
+	shapeCollideResults.Reserve(static_cast<int32>(collector.mHits.size()));
+	for (auto& hit : collector.mHits)
+	{
+		JPH::BodyLockRead bodyLock(MainPhysicsSystem->GetBodyLockInterfaceNoLock(), hit.mBodyID2);
+		if (!bodyLock.Succeeded())
+			continue;
+
+		auto& body = bodyLock.GetBody();
+		if (body.IsSensor())
+			continue;
+
+		shapeCollideResults.Emplace(
+			FJoltBodyID(hit.mBodyID2),
+			shapeCOM.GetLocation(),
+			JoltHelpers::ToUESize(hit.mContactPointOn2),
+			JoltHelpers::ToUESize(hit.mContactPointOn1),
+			0.0f);
+	}
+
+	return shapeCollideResults;
+}
+
+bool UJoltSubsystem::CollideShapeSingleInternal(
+	const JPH::Shape*      shape, const FVector& shapeScale, const FTransform& shapeCOM,
+	FCastShapeResult&      outHit,
+	const JPH::BodyFilter& inBodyFilter) const
+{
+	outHit = FCastShapeResult{};
+
+	if (shape == nullptr || MainPhysicsSystem == nullptr)
+		return false;
+
+	JPH::CollideShapeSettings settings;
+	settings.mBackFaceMode = JPH::EBackFaceMode::CollideWithBackFaces;
+
+	JPH::ClosestHitCollisionCollector<JPH::CollideShapeCollector> collector;
+	MainPhysicsSystem->GetNarrowPhaseQuery().CollideShape(
+		shape,
+		JoltHelpers::ToJoltVec3(shapeScale, false),
+		JoltHelpers::ToJoltTransform(shapeCOM),
+		settings,
+		JoltHelpers::ToJoltPos(FVector::ZeroVector),
+		collector,
+		{},
+		{},
+		inBodyFilter);
+
+	if (!collector.HadHit())
+		return false;
+
+	JPH::BodyLockRead bodyLock(MainPhysicsSystem->GetBodyLockInterfaceNoLock(), collector.mHit.mBodyID2);
+	if (!bodyLock.Succeeded())
+		return false;
+
+	auto& body = bodyLock.GetBody();
+	if (body.IsSensor())
+		return false;
+
+	outHit = {
+		FJoltBodyID(collector.mHit.mBodyID2),
+		shapeCOM.GetLocation(),
+		JoltHelpers::ToUESize(collector.mHit.mContactPointOn2),
+		JoltHelpers::ToUESize(collector.mHit.mContactPointOn1),
+		0.0f
+	};
+
+	return true;
+}
+
+TArray<FJoltBodyID> UJoltSubsystem::BroadPhaseCollideToBodyIDs(
+	JPH::AllHitCollisionCollector<JPH::CollideShapeBodyCollector>& collector,
+	const TArray<FJoltBodyID>&                                     ignoredBodyIDs) const
+{
+	TArray<FJoltBodyID> bodyIDs;
+	bodyIDs.Reserve(static_cast<int32>(collector.mHits.size()));
+
+	for (const JPH::BodyID& bodyID : collector.mHits)
+	{
+		bool bIgnored = false;
+		for (const FJoltBodyID& ignored : ignoredBodyIDs)
+		{
+			if (bodyID == ignored.ToJoltBodyID())
+			{
+				bIgnored = true;
+				break;
+			}
+		}
+		if (bIgnored)
+			continue;
+
+		JPH::BodyLockRead bodyLock(MainPhysicsSystem->GetBodyLockInterfaceNoLock(), bodyID);
+		if (!bodyLock.Succeeded())
+			continue;
+
+		if (bodyLock.GetBody().IsSensor())
+			continue;
+
+		bodyIDs.Add(FJoltBodyID(bodyID));
+	}
+
+	return bodyIDs;
+}
+
+TArray<FJoltBodyID> UJoltSubsystem::SphereOverlapMultiInternal_ByLayers(
+	const FVector&             center, float                          radius,
+	const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
+	const TArray<FJoltBodyID>& ignoredBodyIDs) const
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(Jolt_SphereOverlapMultiInternal_ByLayers);
+
+	if (MainPhysicsSystem == nullptr)
+		return {};
+
+	JPH::AllHitCollisionCollector<JPH::CollideShapeBodyCollector> collector;
+	MainPhysicsSystem->GetBroadPhaseQuery().CollideSphere(
+		JPH::Vec3(JoltHelpers::ToJoltPos(center)),
+		JoltHelpers::ToJoltSize(radius),
+		collector,
+		BroadPhaseLayersFilter_ByLayers_UE(broadPhaseLayers, LayerTable),
+		ObjectLayersFilter_ByLayers_UE(objectLayers, LayerTable));
+
+	return BroadPhaseCollideToBodyIDs(collector, ignoredBodyIDs);
+}
+
+TArray<FJoltBodyID> UJoltSubsystem::OrientedBoxOverlapMultiInternal_ByLayers(
+	const FVector&             center, const FVector&                 halfExtent, const FRotator& orientation,
+	const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
+	const TArray<FJoltBodyID>& ignoredBodyIDs) const
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(Jolt_OrientedBoxOverlapMultiInternal_ByLayers);
+
+	if (MainPhysicsSystem == nullptr)
+		return {};
+
+	JPH::Vec3  joltCenter = JPH::Vec3(JoltHelpers::ToJoltPos(center));
+	JPH::Mat44 joltMat = JPH::Mat44::sRotationTranslation(JoltHelpers::ToJoltRot(orientation), joltCenter);
+
+	JPH::AllHitCollisionCollector<JPH::CollideShapeBodyCollector> collector;
+	MainPhysicsSystem->GetBroadPhaseQuery().CollideOrientedBox(
+		JPH::OrientedBox(joltMat, JoltHelpers::ToJoltVec3(halfExtent)),
+		collector,
+		BroadPhaseLayersFilter_ByLayers_UE(broadPhaseLayers, LayerTable),
+		ObjectLayersFilter_ByLayers_UE(objectLayers, LayerTable));
+
+	return BroadPhaseCollideToBodyIDs(collector, ignoredBodyIDs);
+}
+
+bool UJoltSubsystem::SphereOverlapSingle(const FVector& start, float radius, FJoltBodyID& outBodyID, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	auto results = SphereOverlapMultiInternal_ByLayers(start, radius, {}, {}, ignoredBodyIDs);
+	if (results.IsEmpty())
+		return false;
+	outBodyID = results[0];
+	return true;
+}
+
+bool UJoltSubsystem::SphereOverlapSingle_ByLayers(const FVector& start, float radius, FJoltBodyID& outBodyID, const TArray<FName>& broadPhaseLayers, const TArray<FName>& objectLayers, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	auto results = SphereOverlapMultiInternal_ByLayers(start, radius, broadPhaseLayers, objectLayers, ignoredBodyIDs);
+	if (results.IsEmpty())
+		return false;
+	outBodyID = results[0];
+	return true;
+}
+
+TArray<FJoltBodyID> UJoltSubsystem::SphereOverlapMulti(const FVector& start, float radius, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	return SphereOverlapMultiInternal_ByLayers(start, radius, {}, {}, ignoredBodyIDs);
+}
+
+TArray<FJoltBodyID> UJoltSubsystem::SphereOverlapMulti_ByLayers(const FVector& start, float radius, const TArray<FName>& broadPhaseLayers, const TArray<FName>& objectLayers, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	return SphereOverlapMultiInternal_ByLayers(start, radius, broadPhaseLayers, objectLayers, ignoredBodyIDs);
+}
+
+bool UJoltSubsystem::BoxOverlapSingle(const FVector& start, const FVector& halfExtent, const FRotator& orientation, FJoltBodyID& outBodyID, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	auto results = OrientedBoxOverlapMultiInternal_ByLayers(start, halfExtent, orientation, {}, {}, ignoredBodyIDs);
+	if (results.IsEmpty())
+		return false;
+	outBodyID = results[0];
+	return true;
+}
+
+bool UJoltSubsystem::BoxOverlapSingle_ByLayers(const FVector& start, const FVector& halfExtent, const FRotator& orientation, FJoltBodyID& outBodyID, const TArray<FName>& broadPhaseLayers, const TArray<FName>& objectLayers, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	auto results = OrientedBoxOverlapMultiInternal_ByLayers(start, halfExtent, orientation, broadPhaseLayers, objectLayers, ignoredBodyIDs);
+	if (results.IsEmpty())
+		return false;
+	outBodyID = results[0];
+	return true;
+}
+
+TArray<FJoltBodyID> UJoltSubsystem::BoxOverlapMulti(const FVector& start, const FVector& halfExtent, const FRotator& orientation, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	return OrientedBoxOverlapMultiInternal_ByLayers(start, halfExtent, orientation, {}, {}, ignoredBodyIDs);
+}
+
+TArray<FJoltBodyID> UJoltSubsystem::BoxOverlapMulti_ByLayers(const FVector& start, const FVector& halfExtent, const FRotator& orientation, const TArray<FName>& broadPhaseLayers, const TArray<FName>& objectLayers, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	return OrientedBoxOverlapMultiInternal_ByLayers(start, halfExtent, orientation, broadPhaseLayers, objectLayers, ignoredBodyIDs);
+}
+
+bool UJoltSubsystem::CapsuleOverlapSingle(const FVector& start, float radius, float halfHeight, const FRotator& orientation, FJoltBodyID& outBodyID, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	auto results = OrientedBoxOverlapMultiInternal_ByLayers(start, FVector(radius, radius, halfHeight), orientation, {}, {}, ignoredBodyIDs);
+	if (results.IsEmpty())
+		return false;
+	outBodyID = results[0];
+	return true;
+}
+
+bool UJoltSubsystem::CapsuleOverlapSingle_ByLayers(const FVector& start, float radius, float halfHeight, const FRotator& orientation, FJoltBodyID& outBodyID, const TArray<FName>& broadPhaseLayers, const TArray<FName>& objectLayers, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	auto results = OrientedBoxOverlapMultiInternal_ByLayers(start, FVector(radius, radius, halfHeight), orientation, broadPhaseLayers, objectLayers, ignoredBodyIDs);
+	if (results.IsEmpty())
+		return false;
+	outBodyID = results[0];
+	return true;
+}
+
+TArray<FJoltBodyID> UJoltSubsystem::CapsuleOverlapMulti(const FVector& start, float radius, float halfHeight, const FRotator& orientation, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	return OrientedBoxOverlapMultiInternal_ByLayers(start, FVector(radius, radius, halfHeight), orientation, {}, {}, ignoredBodyIDs);
+}
+
+TArray<FJoltBodyID> UJoltSubsystem::CapsuleOverlapMulti_ByLayers(const FVector& start, float radius, float halfHeight, const FRotator& orientation, const TArray<FName>& broadPhaseLayers, const TArray<FName>& objectLayers, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	return OrientedBoxOverlapMultiInternal_ByLayers(start, FVector(radius, radius, halfHeight), orientation, broadPhaseLayers, objectLayers, ignoredBodyIDs);
+}
+
 TArray<FCastShapeResult> UJoltSubsystem::CastShape(const UShapeComponent* shape, const FVector& shapeScale, const FTransform& shapeCOM, const FVector& direction)
 {
 	auto joltShape = ProcessShapeElement(shape);
@@ -1783,12 +2041,28 @@ bool UJoltSubsystem::SphereTraceSingle(const FVector& start, const FVector& end,
 	return CastShapeSingleInternal(sphereShape, FVector::OneVector, FTransform(FQuat::Identity, start), end - start, outHit, ignoredBodiesFilter);
 }
 
+bool UJoltSubsystem::SphereTraceSingle(const FVector& start, float radius, FCastShapeResult& outHit, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	auto                            sphereShape = GetSphereCollisionShape(radius);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CollideShapeSingleInternal(sphereShape, FVector::OneVector, FTransform(FQuat::Identity, start), outHit, ignoredBodiesFilter);
+}
+
 TArray<FCastShapeResult> UJoltSubsystem::SphereTraceMulti(const FVector& start, const FVector& end, float radius, const TArray<FJoltBodyID>& ignoredBodyIDs)
 {
 	auto                            sphereShape = GetSphereCollisionShape(radius);
 	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
 	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
 	return CastShapeMultiInternal_ByLayers(sphereShape, FVector::OneVector, FTransform(FQuat::Identity, start), end - start, {}, {}, ignoredBodiesFilter);
+}
+
+TArray<FCastShapeResult> UJoltSubsystem::SphereTraceMulti(const FVector& start, float radius, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	auto                            sphereShape = GetSphereCollisionShape(radius);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CollideShapeMultiInternal_ByLayers(sphereShape, FVector::OneVector, FTransform(FQuat::Identity, start), {}, {}, ignoredBodiesFilter);
 }
 
 TArray<FCastShapeResult> UJoltSubsystem::SphereTraceMulti_ByLayers(const FVector& start, const FVector& end, float radius, const TArray<FName>& broadPhaseLayers, const TArray<FName>& objectLayers, const TArray<FJoltBodyID>& ignoredBodyIDs)
@@ -1799,12 +2073,28 @@ TArray<FCastShapeResult> UJoltSubsystem::SphereTraceMulti_ByLayers(const FVector
 	return CastShapeMultiInternal_ByLayers(sphereShape, FVector::OneVector, FTransform(FQuat::Identity, start), end - start, broadPhaseLayers, objectLayers, ignoredBodiesFilter);
 }
 
+TArray<FCastShapeResult> UJoltSubsystem::SphereTraceMulti_ByLayers(const FVector& start, float radius, const TArray<FName>& broadPhaseLayers, const TArray<FName>& objectLayers, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	auto                            sphereShape = GetSphereCollisionShape(radius);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CollideShapeMultiInternal_ByLayers(sphereShape, FVector::OneVector, FTransform(FQuat::Identity, start), broadPhaseLayers, objectLayers, ignoredBodiesFilter);
+}
+
 bool UJoltSubsystem::BoxTraceSingle(const FVector& start, const FVector& end, const FVector& halfExtent, const FRotator& orientation, FCastShapeResult& outHit, const TArray<FJoltBodyID>& ignoredBodyIDs)
 {
 	auto                            boxShape = GetBoxCollisionShape(halfExtent * 2.0f);
 	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
 	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
 	return CastShapeSingleInternal(boxShape, FVector::OneVector, FTransform(orientation, start), end - start, outHit, ignoredBodiesFilter);
+}
+
+bool UJoltSubsystem::BoxTraceSingle(const FVector& start, const FVector& halfExtent, const FRotator& orientation, FCastShapeResult& outHit, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	auto                            boxShape = GetBoxCollisionShape(halfExtent * 2.0f);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CollideShapeSingleInternal(boxShape, FVector::OneVector, FTransform(orientation, start), outHit, ignoredBodiesFilter);
 }
 
 TArray<FCastShapeResult> UJoltSubsystem::BoxTraceMulti(const FVector& start, const FVector& end, const FVector& halfExtent, const FRotator& orientation, const TArray<FJoltBodyID>& ignoredBodyIDs)
@@ -1815,12 +2105,28 @@ TArray<FCastShapeResult> UJoltSubsystem::BoxTraceMulti(const FVector& start, con
 	return CastShapeMultiInternal_ByLayers(boxShape, FVector::OneVector, FTransform(orientation, start), end - start, {}, {}, ignoredBodiesFilter);
 }
 
+TArray<FCastShapeResult> UJoltSubsystem::BoxTraceMulti(const FVector& start, const FVector& halfExtent, const FRotator& orientation, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	auto                            boxShape = GetBoxCollisionShape(halfExtent * 2.0f);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CollideShapeMultiInternal_ByLayers(boxShape, FVector::OneVector, FTransform(orientation, start), {}, {}, ignoredBodiesFilter);
+}
+
 TArray<FCastShapeResult> UJoltSubsystem::BoxTraceMulti_ByLayers(const FVector& start, const FVector& end, const FVector& halfExtent, const FRotator& orientation, const TArray<FName>& broadPhaseLayers, const TArray<FName>& objectLayers, const TArray<FJoltBodyID>& ignoredBodyIDs)
 {
 	auto                            boxShape = GetBoxCollisionShape(halfExtent * 2.0f);
 	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
 	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
 	return CastShapeMultiInternal_ByLayers(boxShape, FVector::OneVector, FTransform(orientation, start), end - start, broadPhaseLayers, objectLayers, ignoredBodiesFilter);
+}
+
+TArray<FCastShapeResult> UJoltSubsystem::BoxTraceMulti_ByLayers(const FVector& start, const FVector& halfExtent, const FRotator& orientation, const TArray<FName>& broadPhaseLayers, const TArray<FName>& objectLayers, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	auto                            boxShape = GetBoxCollisionShape(halfExtent * 2.0f);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CollideShapeMultiInternal_ByLayers(boxShape, FVector::OneVector, FTransform(orientation, start), broadPhaseLayers, objectLayers, ignoredBodiesFilter);
 }
 
 bool UJoltSubsystem::CapsuleTraceSingle(const FVector& start, const FVector& end, float radius, float halfHeight, const FRotator& orientation, FCastShapeResult& outHit, const TArray<FJoltBodyID>& ignoredBodyIDs)
@@ -1832,6 +2138,15 @@ bool UJoltSubsystem::CapsuleTraceSingle(const FVector& start, const FVector& end
 	return CastShapeSingleInternal(capsuleShape, FVector::OneVector, FTransform(orientation, start), end - start, outHit, ignoredBodiesFilter);
 }
 
+bool UJoltSubsystem::CapsuleTraceSingle(const FVector& start, float radius, float halfHeight, const FRotator& orientation, FCastShapeResult& outHit, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	float                           cylinderHeight = FMath::Max(0.0f, (halfHeight - radius) * 2.0f);
+	auto                            capsuleShape = GetCapsuleCollisionShape(radius, cylinderHeight);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CollideShapeSingleInternal(capsuleShape, FVector::OneVector, FTransform(orientation, start), outHit, ignoredBodiesFilter);
+}
+
 TArray<FCastShapeResult> UJoltSubsystem::CapsuleTraceMulti(const FVector& start, const FVector& end, float radius, float halfHeight, const FRotator& orientation, const TArray<FJoltBodyID>& ignoredBodyIDs)
 {
 	float                           cylinderHeight = FMath::Max(0.0f, (halfHeight - radius) * 2.0f);
@@ -1841,6 +2156,15 @@ TArray<FCastShapeResult> UJoltSubsystem::CapsuleTraceMulti(const FVector& start,
 	return CastShapeMultiInternal_ByLayers(capsuleShape, FVector::OneVector, FTransform(orientation, start), end - start, {}, {}, ignoredBodiesFilter);
 }
 
+TArray<FCastShapeResult> UJoltSubsystem::CapsuleTraceMulti(const FVector& start, float radius, float halfHeight, const FRotator& orientation, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	float                           cylinderHeight = FMath::Max(0.0f, (halfHeight - radius) * 2.0f);
+	auto                            capsuleShape = GetCapsuleCollisionShape(radius, cylinderHeight);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CollideShapeMultiInternal_ByLayers(capsuleShape, FVector::OneVector, FTransform(orientation, start), {}, {}, ignoredBodiesFilter);
+}
+
 TArray<FCastShapeResult> UJoltSubsystem::CapsuleTraceMulti_ByLayers(const FVector& start, const FVector& end, float radius, float halfHeight, const FRotator& orientation, const TArray<FName>& broadPhaseLayers, const TArray<FName>& objectLayers, const TArray<FJoltBodyID>& ignoredBodyIDs)
 {
 	float                           cylinderHeight = FMath::Max(0.0f, (halfHeight - radius) * 2.0f);
@@ -1848,6 +2172,15 @@ TArray<FCastShapeResult> UJoltSubsystem::CapsuleTraceMulti_ByLayers(const FVecto
 	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
 	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
 	return CastShapeMultiInternal_ByLayers(capsuleShape, FVector::OneVector, FTransform(orientation, start), end - start, broadPhaseLayers, objectLayers, ignoredBodiesFilter);
+}
+
+TArray<FCastShapeResult> UJoltSubsystem::CapsuleTraceMulti_ByLayers(const FVector& start, float radius, float halfHeight, const FRotator& orientation, const TArray<FName>& broadPhaseLayers, const TArray<FName>& objectLayers, const TArray<FJoltBodyID>& ignoredBodyIDs)
+{
+	float                           cylinderHeight = FMath::Max(0.0f, (halfHeight - radius) * 2.0f);
+	auto                            capsuleShape = GetCapsuleCollisionShape(radius, cylinderHeight);
+	JPH::IgnoreMultipleBodiesFilter ignoredBodiesFilter;
+	PopulateIgnoredBodyFilter(ignoredBodiesFilter, ignoredBodyIDs);
+	return CollideShapeMultiInternal_ByLayers(capsuleShape, FVector::OneVector, FTransform(orientation, start), broadPhaseLayers, objectLayers, ignoredBodiesFilter);
 }
 
 FRaycastResult UJoltSubsystem::RayCastNarrowPhase(

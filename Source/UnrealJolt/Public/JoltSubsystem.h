@@ -231,9 +231,17 @@ public:
 		const FVector&             start, const FVector& end, float radius, FCastShapeResult& outHit,
 		const TArray<FJoltBodyID>& ignoredBodyIDs);
 
+	bool SphereTraceSingle(
+		const FVector&             start, float radius, FCastShapeResult& outHit,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
 	TArray<FCastShapeResult> SphereTraceMulti(
 		const FVector&             start, const FVector& end, float radius,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	TArray<FCastShapeResult> SphereTraceMulti(
+		const FVector&             start, float radius,
 		const TArray<FJoltBodyID>& ignoredBodyIDs);
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
@@ -242,14 +250,27 @@ public:
 		const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
 		const TArray<FJoltBodyID>& ignoredBodyIDs);
 
+	TArray<FCastShapeResult> SphereTraceMulti_ByLayers(
+		const FVector&             start, float                           radius,
+		const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
 	bool BoxTraceSingle(
 		const FVector&             start, const FVector& end, const FVector& halfExtent, const FRotator& orientation, FCastShapeResult& outHit,
 		const TArray<FJoltBodyID>& ignoredBodyIDs);
 
+	bool BoxTraceSingle(
+		const FVector&             start, const FVector& halfExtent, const FRotator& orientation, FCastShapeResult& outHit,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
 	TArray<FCastShapeResult> BoxTraceMulti(
 		const FVector&             start, const FVector& end, const FVector& halfExtent, const FRotator& orientation,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	TArray<FCastShapeResult> BoxTraceMulti(
+		const FVector&             start, const FVector& halfExtent, const FRotator& orientation,
 		const TArray<FJoltBodyID>& ignoredBodyIDs);
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
@@ -258,9 +279,18 @@ public:
 		const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
 		const TArray<FJoltBodyID>& ignoredBodyIDs);
 
+	TArray<FCastShapeResult> BoxTraceMulti_ByLayers(
+		const FVector&             start, const FVector&                  halfExtent, const FRotator& orientation,
+		const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
 	bool CapsuleTraceSingle(
 		const FVector&             start, const FVector& end, float radius, float halfHeight, const FRotator& orientation, FCastShapeResult& outHit,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	bool CapsuleTraceSingle(
+		const FVector&             start, float radius, float halfHeight, const FRotator& orientation, FCastShapeResult& outHit,
 		const TArray<FJoltBodyID>& ignoredBodyIDs);
 
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
@@ -268,9 +298,87 @@ public:
 		const FVector&             start, const FVector& end, float radius, float halfHeight, const FRotator& orientation,
 		const TArray<FJoltBodyID>& ignoredBodyIDs);
 
+	TArray<FCastShapeResult> CapsuleTraceMulti(
+		const FVector&             start, float radius, float halfHeight, const FRotator& orientation,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
 	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
 	TArray<FCastShapeResult> CapsuleTraceMulti_ByLayers(
 		const FVector&             start, const FVector&                  end, float radius, float halfHeight, const FRotator& orientation,
+		const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	TArray<FCastShapeResult> CapsuleTraceMulti_ByLayers(
+		const FVector&             start, float                           radius, float halfHeight, const FRotator& orientation,
+		const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	// Broad phase overlap queries — test bounding boxes only (faster, less precise than narrow phase).
+	// Return body IDs only; no contact points are available at the broad phase level.
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	bool SphereOverlapSingle(
+		const FVector&             start, float radius, FJoltBodyID& outBodyID,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	bool SphereOverlapSingle_ByLayers(
+		const FVector&             start, float                           radius, FJoltBodyID& outBodyID,
+		const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	TArray<FJoltBodyID> SphereOverlapMulti(
+		const FVector&             start, float radius,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	TArray<FJoltBodyID> SphereOverlapMulti_ByLayers(
+		const FVector&             start, float                           radius,
+		const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	bool BoxOverlapSingle(
+		const FVector&             start, const FVector& halfExtent, const FRotator& orientation, FJoltBodyID& outBodyID,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	bool BoxOverlapSingle_ByLayers(
+		const FVector&             start, const FVector&                  halfExtent, const FRotator& orientation, FJoltBodyID& outBodyID,
+		const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	TArray<FJoltBodyID> BoxOverlapMulti(
+		const FVector&             start, const FVector& halfExtent, const FRotator& orientation,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	TArray<FJoltBodyID> BoxOverlapMulti_ByLayers(
+		const FVector&             start, const FVector&                  halfExtent, const FRotator& orientation,
+		const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	// Capsule broad phase is approximated as an oriented box with halfExtents (radius, radius, halfHeight).
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	bool CapsuleOverlapSingle(
+		const FVector&             start, float radius, float halfHeight, const FRotator& orientation, FJoltBodyID& outBodyID,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	bool CapsuleOverlapSingle_ByLayers(
+		const FVector&             start, float                           radius, float halfHeight, const FRotator& orientation, FJoltBodyID& outBodyID,
+		const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	TArray<FJoltBodyID> CapsuleOverlapMulti(
+		const FVector&             start, float radius, float halfHeight, const FRotator& orientation,
+		const TArray<FJoltBodyID>& ignoredBodyIDs);
+
+	UFUNCTION(BlueprintCallable, Category = "Jolt Physics")
+	TArray<FJoltBodyID> CapsuleOverlapMulti_ByLayers(
+		const FVector&             start, float                           radius, float halfHeight, const FRotator& orientation,
 		const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
 		const TArray<FJoltBodyID>& ignoredBodyIDs);
 
@@ -630,10 +738,34 @@ protected:
 		const TArray<FName>&   broadPhaseLayers, const TArray<FName>& objectLayers,
 		const JPH::BodyFilter& inBodyFilter = {}) const;
 
+	TArray<FCastShapeResult> CollideShapeMultiInternal_ByLayers(
+		const JPH::Shape*      shape, const FVector&                  shapeScale, const FTransform& shapeCOM,
+		const TArray<FName>&   broadPhaseLayers, const TArray<FName>& objectLayers,
+		const JPH::BodyFilter& inBodyFilter = {}) const;
+
 	bool CastShapeSingleInternal(
 		const JPH::Shape*      shape, const FVector&        shapeScale, const FTransform& shapeCOM,
 		const FVector&         direction, FCastShapeResult& outHit,
 		const JPH::BodyFilter& inBodyFilter = {}) const;
+
+	bool CollideShapeSingleInternal(
+		const JPH::Shape*      shape, const FVector& shapeScale, const FTransform& shapeCOM,
+		FCastShapeResult&      outHit,
+		const JPH::BodyFilter& inBodyFilter = {}) const;
+
+	TArray<FJoltBodyID> BroadPhaseCollideToBodyIDs(
+		JPH::AllHitCollisionCollector<JPH::CollideShapeBodyCollector>& collector,
+		const TArray<FJoltBodyID>&                                     ignoredBodyIDs) const;
+
+	TArray<FJoltBodyID> SphereOverlapMultiInternal_ByLayers(
+		const FVector&             center, float                          radius,
+		const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
+		const TArray<FJoltBodyID>& ignoredBodyIDs) const;
+
+	TArray<FJoltBodyID> OrientedBoxOverlapMultiInternal_ByLayers(
+		const FVector&             center, const FVector&                 halfExtent, const FRotator& orientation,
+		const TArray<FName>&       broadPhaseLayers, const TArray<FName>& objectLayers,
+		const TArray<FJoltBodyID>& ignoredBodyIDs) const;
 
 	/*
 	 * Fetch all the actors in UE world and add them to jolt simulation

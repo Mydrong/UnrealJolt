@@ -41,6 +41,7 @@ PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
 #include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
+#include <Jolt/Geometry/OrientedBox.h>
 
 #include <Jolt/Core/IssueReporting.h>
 
